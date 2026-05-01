@@ -1,0 +1,6 @@
+<Solution>
+  <Project Path="BedrockLevelDB/BedrockLevelDB.csproj" />
+  <Project Path="BedrockRender.Console/BedrockRender.Console.csproj" />
+  <Project Path="BedrockRender/BedrockRender.csproj" />
+  <Project Path="BedrockWorld/BedrockWorld.csproj" />
+</Solution>
