@@ -8,7 +8,7 @@ using SixLabors.ImageSharp;
 Console.WriteLine("Bedrock Render - C# Edition");
 Console.WriteLine("==========================");
 
-var worldPath = @"D:\BedrockBoot\bedrock_versions\1.21.13201\config\BedrockBoot2\isolation\Users\2818413420751248947\games\com.mojang\minecraftWorlds\Oi+oi7AwEtE=";
+var worldPath = @"E:\JMGS36_EX1";
 
 if (!Directory.Exists(worldPath))
 {

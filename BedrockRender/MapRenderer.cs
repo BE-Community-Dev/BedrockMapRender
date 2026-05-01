@@ -1,7 +1,11 @@
 using BedrockWorld.Chunk;
 using BedrockRender.Palette;
+using BedrockRender.Gpu;
 using SixLabors.ImageSharp;
 using SixLabors.ImageSharp.PixelFormats;
+using System.Buffers;
+using System.Threading.Tasks;
+using System.Collections.Generic;
 
 namespace BedrockRender;
 
@@ -14,15 +18,75 @@ public enum RenderMode
     CaveSlice
 }
 
-public class MapRenderer
+public enum RenderEngine
+{
+    Auto,
+    Cpu,
+    Gpu
+}
+
+public class MapRenderer : IDisposable
 {
     private readonly BedrockWorld.BedrockWorld _world;
     private readonly RenderPalette _palette;
+    private readonly GpuRenderEngine? _gpuEngine;
+    private RenderEngine _currentEngine;
+    private bool _disposed;
 
-    public MapRenderer(BedrockWorld.BedrockWorld world, RenderPalette palette)
+    private const int MaxChunkCacheSize = 64;
+    private const int ChunkBatchSize = 8;
+
+    public static RenderEngine DefaultEngine { get; private set; } = RenderEngine.Auto;
+
+    public static bool IsGpuAvailable => GpuCapabilities.IsGpuAvailable();
+
+    public RenderEngine CurrentEngine => _currentEngine;
+
+    public MapRenderer(BedrockWorld.BedrockWorld world, RenderPalette palette, RenderEngine preferredEngine = RenderEngine.Auto)
     {
         _world = world;
         _palette = palette;
+
+        if (preferredEngine == RenderEngine.Auto)
+        {
+            DefaultEngine = GpuCapabilities.DetectBestEngine() == RenderEngineType.Gpu ? RenderEngine.Gpu : RenderEngine.Cpu;
+        }
+        else
+        {
+            DefaultEngine = preferredEngine;
+        }
+
+        _currentEngine = DefaultEngine;
+
+        if (_currentEngine == RenderEngine.Gpu || preferredEngine == RenderEngine.Gpu)
+        {
+            _gpuEngine = new GpuRenderEngine();
+            if (!_gpuEngine.IsGpuEnabled)
+            {
+                _gpuEngine.Dispose();
+                _gpuEngine = null;
+                _currentEngine = RenderEngine.Cpu;
+            }
+        }
+    }
+
+    public void SetEngine(RenderEngine engine)
+    {
+        if (engine == _currentEngine)
+            return;
+
+        if (engine == RenderEngine.Gpu)
+        {
+            if (_gpuEngine == null || !_gpuEngine.IsGpuEnabled)
+            {
+                throw new InvalidOperationException("GPU engine is not available");
+            }
+            _currentEngine = RenderEngine.Gpu;
+        }
+        else
+        {
+            _currentEngine = RenderEngine.Cpu;
+        }
     }
 
     public Image<Rgba32> RenderHeightMap(Dimension dimension, int minChunkX, int minChunkZ, int maxChunkX,
@@ -30,31 +94,48 @@ public class MapRenderer
     {
         var width = (maxChunkX - minChunkX + 1) * 16;
         var height = (maxChunkZ - minChunkZ + 1) * 16;
-        var image = new Image<Rgba32>(width, height);
 
-        for (var chunkZ = minChunkZ; chunkZ <= maxChunkZ; chunkZ++)
+        var pixelData = ArrayPool<uint>.Shared.Rent(width * height);
+        try
         {
-            for (var chunkX = minChunkX; chunkX <= maxChunkX; chunkX++)
+            Parallel.For(minChunkZ, maxChunkZ + 1, chunkZ =>
             {
-                var pos = new ChunkPos(chunkX, chunkZ, dimension);
-                var (heightMap, _) = _world.GetChunkTerrain(pos);
-
-                var offsetX = (chunkX - minChunkX) * 16;
-                var offsetZ = (chunkZ - minChunkZ) * 16;
-
-                for (var z = 0; z < 16; z++)
+                for (var chunkX = minChunkX; chunkX <= maxChunkX; chunkX++)
                 {
-                    for (var x = 0; x < 16; x++)
-                    {
-                        var h = heightMap?[z, x] ?? (short)0;
-                        var color = _palette.HeightColor(h, minHeight, maxHeight);
-                        image[offsetX + x, offsetZ + z] = new Rgba32(color.R, color.G, color.B, color.A);
-                    }
+                    ProcessHeightMapChunk(chunkX, chunkZ, dimension, minChunkX, minChunkZ, width, minHeight, maxHeight, pixelData);
                 }
+            });
+
+            var image = new Image<Rgba32>(width, height);
+            CopyPixelsToImage(image, pixelData, width, height);
+            return image;
+        }
+        finally
+        {
+            ArrayPool<uint>.Shared.Return(pixelData);
+        }
+    }
+
+    private void ProcessHeightMapChunk(int chunkX, int chunkZ, Dimension dimension, int minChunkX, int minChunkZ,
+        int width, short minHeight, short maxHeight, uint[] pixelData)
+    {
+        var pos = new ChunkPos(chunkX, chunkZ, dimension);
+        var (heightMap, _) = _world.GetChunkTerrain(pos);
+
+        var offsetX = (chunkX - minChunkX) * 16;
+        var offsetZ = (chunkZ - minChunkZ) * 16;
+
+        for (var z = 0; z < 16; z++)
+        {
+            for (var x = 0; x < 16; x++)
+            {
+                var imgX = offsetX + x;
+                var imgZ = offsetZ + z;
+                var h = heightMap?[z, x] ?? (short)0;
+                var color = _palette.HeightColor(h, minHeight, maxHeight);
+                pixelData[imgZ * width + imgX] = ((uint)color.A << 24) | ((uint)color.R << 16) | ((uint)color.G << 8) | color.B;
             }
         }
-
-        return image;
     }
 
     public Image<Rgba32> RenderBiome(Dimension dimension, int minChunkX, int minChunkZ, int maxChunkX, int maxChunkZ,
@@ -62,45 +143,74 @@ public class MapRenderer
     {
         var width = (maxChunkX - minChunkX + 1) * 16;
         var height = (maxChunkZ - minChunkZ + 1) * 16;
-        var image = new Image<Rgba32>(width, height);
 
-        for (var chunkZ = minChunkZ; chunkZ <= maxChunkZ; chunkZ++)
+        var biomeIds = ArrayPool<int>.Shared.Rent(width * height);
+        var pixelData = ArrayPool<uint>.Shared.Rent(width * height);
+
+        try
         {
-            for (var chunkX = minChunkX; chunkX <= maxChunkX; chunkX++)
+            Parallel.For(minChunkZ, maxChunkZ + 1, chunkZ =>
             {
-                var pos = new ChunkPos(chunkX, chunkZ, dimension);
-                var (_, biomes) = _world.GetChunkTerrain(pos);
-
-                var offsetX = (chunkX - minChunkX) * 16;
-                var offsetZ = (chunkZ - minChunkZ) * 16;
-
-                for (var z = 0; z < 16; z++)
+                for (var chunkX = minChunkX; chunkX <= maxChunkX; chunkX++)
                 {
-                    for (var x = 0; x < 16; x++)
-                    {
-                        int colorValue;
-                        if (rawBiome)
-                        {
-                            colorValue = biomes?[z, x] ?? 0;
-                        }
-                        else
-                        {
-                            var biomeId = biomes?[z, x] ?? 0;
-                            var biomeColor = _palette.BiomeColor(biomeId);
-                            colorValue = (biomeColor.R << 16) | (biomeColor.G << 8) | biomeColor.B;
-                        }
-
-                        var r = (byte)((colorValue >> 16) & 0xff);
-                        var g = (byte)((colorValue >> 8) & 0xff);
-                        var b = (byte)(colorValue & 0xff);
-
-                        image[offsetX + x, offsetZ + z] = new Rgba32(r, g, b, 255);
-                    }
+                    ProcessBiomeChunk(chunkX, chunkZ, dimension, minChunkX, minChunkZ, width, biomeIds);
                 }
+            });
+
+            Parallel.For(0, height, z =>
+            {
+                for (var x = 0; x < width; x++)
+                {
+                    var biomeId = biomeIds[z * width + x];
+                    int colorValue;
+
+                    if (rawBiome)
+                    {
+                        colorValue = biomeId;
+                    }
+                    else
+                    {
+                        var biomeColor = _palette.BiomeColor(biomeId);
+                        colorValue = (biomeColor.R << 16) | (biomeColor.G << 8) | biomeColor.B;
+                    }
+
+                    var r = (byte)((colorValue >> 16) & 0xff);
+                    var g = (byte)((colorValue >> 8) & 0xff);
+                    var b = (byte)(colorValue & 0xff);
+
+                    pixelData[z * width + x] = (uint)((255 << 24) | (r << 16) | (g << 8) | b);
+                }
+            });
+
+            var image = new Image<Rgba32>(width, height);
+            CopyPixelsToImage(image, pixelData, width, height);
+            return image;
+        }
+        finally
+        {
+            ArrayPool<int>.Shared.Return(biomeIds);
+            ArrayPool<uint>.Shared.Return(pixelData);
+        }
+    }
+
+    private void ProcessBiomeChunk(int chunkX, int chunkZ, Dimension dimension, int minChunkX, int minChunkZ,
+        int width, int[] biomeIds)
+    {
+        var pos = new ChunkPos(chunkX, chunkZ, dimension);
+        var (_, biomes) = _world.GetChunkTerrain(pos);
+
+        var offsetX = (chunkX - minChunkX) * 16;
+        var offsetZ = (chunkZ - minChunkZ) * 16;
+
+        for (var z = 0; z < 16; z++)
+        {
+            for (var x = 0; x < 16; x++)
+            {
+                var imgX = offsetX + x;
+                var imgZ = offsetZ + z;
+                biomeIds[imgZ * width + imgX] = biomes?[z, x] ?? 0;
             }
         }
-
-        return image;
     }
 
     public Image<Rgba32> RenderSurfaceBlocks(Dimension dimension, int minChunkX, int minChunkZ, int maxChunkX,
@@ -108,76 +218,136 @@ public class MapRenderer
     {
         var width = (maxChunkX - minChunkX + 1) * 16;
         var height = (maxChunkZ - minChunkZ + 1) * 16;
-        var image = new Image<Rgba32>(width, height);
 
-        var subChunksCache = new Dictionary<(ChunkPos, sbyte), SubChunk?>();
-        var heightMap = new short[width, height];
-        var baseColors = new RgbaColor[width, height];
+        var blockColors = ArrayPool<uint>.Shared.Rent(width * height);
+        var heightMap = ArrayPool<int>.Shared.Rent(width * height);
 
-        // --- 第一阶段：基础采样 ---
-        for (var cz = minChunkZ; cz <= maxChunkZ; cz++)
+        try
         {
-            for (var cx = minChunkX; cx <= maxChunkX; cx++)
+            ProcessSurfaceBlocksData(dimension, minChunkX, minChunkZ, maxChunkX, maxChunkZ, width, height, blockColors, heightMap);
+
+            if (_currentEngine == RenderEngine.Gpu && _gpuEngine != null)
             {
-                var pos = new ChunkPos(cx, cz, dimension);
-                var (chunkHeightMap, biomes) = _world.GetChunkTerrain(pos);
+                return _gpuEngine.RenderSurfaceBlocksGpu(blockColors, heightMap, width, height);
+            }
 
-                int offsetX = (cx - minChunkX) * 16;
-                int offsetZ = (cz - minChunkZ) * 16;
+            return RenderSurfaceBlocksCpu(blockColors, heightMap, width, height);
+        }
+        finally
+        {
+            ArrayPool<uint>.Shared.Return(blockColors);
+            ArrayPool<int>.Shared.Return(heightMap);
+        }
+    }
 
-                for (var z = 0; z < 16; z++)
-                {
-                    for (var x = 0; x < 16; x++)
-                    {
-                        int imgX = offsetX + x;
-                        int imgZ = offsetZ + z;
+    private void ProcessSurfaceBlocksData(Dimension dimension, int minChunkX, int minChunkZ, int maxChunkX, int maxChunkZ,
+        int width, int height, uint[] blockColors, int[] heightMap)
+    {
+        var chunkCountX = maxChunkX - minChunkX + 1;
+        var chunkCountZ = maxChunkZ - minChunkZ + 1;
+        var totalChunks = chunkCountX * chunkCountZ;
 
-                        short h = chunkHeightMap?[z, x] ?? -64;
-                        int biomeId = biomes?[z, x] ?? 0;
+        var processedChunks = 0;
 
-                        heightMap[imgX, imgZ] = h;
-                        baseColors[imgX, imgZ] = GetBlockColorWithWater(pos, x, z, h, biomeId, subChunksCache);
-                    }
-                }
+        while (processedChunks < totalChunks)
+        {
+            var batchSize = Math.Min(ChunkBatchSize, totalChunks - processedChunks);
+            var tasks = new Task[batchSize];
+
+            for (var i = 0; i < batchSize; i++)
+            {
+                var idx = processedChunks + i;
+                var cz = idx / chunkCountX + minChunkZ;
+                var cx = idx % chunkCountX + minChunkX;
+                tasks[i] = Task.Run(() => ProcessSurfaceChunk(cx, cz, dimension, minChunkX, minChunkZ, width, blockColors, heightMap));
+            }
+
+            Task.WaitAll(tasks);
+            processedChunks += batchSize;
+        }
+    }
+
+    private void ProcessSurfaceChunk(int cx, int cz, Dimension dimension, int minChunkX, int minChunkZ,
+        int width, uint[] blockColors, int[] heightMap)
+    {
+        var pos = new ChunkPos(cx, cz, dimension);
+        var (chunkHeightMap, biomes) = _world.GetChunkTerrain(pos);
+
+        var offsetX = (cx - minChunkX) * 16;
+        var offsetZ = (cz - minChunkZ) * 16;
+
+        var localCache = new Dictionary<(ChunkPos, sbyte), SubChunk?>();
+
+        for (var z = 0; z < 16; z++)
+        {
+            for (var x = 0; x < 16; x++)
+            {
+                var imgX = offsetX + x;
+                var imgZ = offsetZ + z;
+                var h = chunkHeightMap?[z, x] ?? -64;
+                var biomeId = biomes?[z, x] ?? 0;
+
+                heightMap[imgZ * width + imgX] = h;
+
+                var color = GetBlockColorWithWater(pos, x, z, (short)h, biomeId, localCache);
+                blockColors[imgZ * width + imgX] = ((uint)color.A << 24) | ((uint)color.R << 16) | ((uint)color.G << 8) | color.B;
             }
         }
 
-        // --- 第二阶段：Hillshading 3D 效果应用 ---
-        for (var z = 0; z < height; z++)
+        localCache.Clear();
+    }
+
+    private Image<Rgba32> RenderSurfaceBlocksCpu(uint[] blockColors, int[] heightMap, int width, int height)
+    {
+        var image = new Image<Rgba32>(width, height);
+        var pixels = ArrayPool<uint>.Shared.Rent(width * height);
+
+        try
         {
-            for (var x = 0; x < width; x++)
+            Parallel.For(0, height, z =>
             {
-                var color = baseColors[x, z];
-                if (color.A == 0) continue;
-
-                // 计算光照强度 (模拟太阳在左上方)
-                // 我们比较当前像素与左侧和上方像素的高度差
-                float shadow = 1.0f;
-                if (x > 0 && z > 0)
+                for (var x = 0; x < width; x++)
                 {
-                    // dx, dz 是坡度。值越大说明向光面，值越小说明背光面
-                    float dx = heightMap[x, z] - heightMap[x - 1, z];
-                    float dz = heightMap[x, z] - heightMap[x, z - 1];
+                    var idx = z * width + x;
+                    var colorUint = blockColors[idx];
+                    var h = heightMap[idx];
 
-                    // 模拟 45 度角的阳光
-                    // 增加系数 0.15f 可以让阴影更深
-                    shadow = 1.0f + (dx + dz) * 0.12f;
+                    var r = (byte)((colorUint >> 16) & 0xff);
+                    var g = (byte)((colorUint >> 8) & 0xff);
+                    var b = (byte)(colorUint & 0xff);
+                    var a = (byte)((colorUint >> 24) & 0xff);
+
+                    if (a == 0)
+                    {
+                        pixels[idx] = 0;
+                        continue;
+                    }
+
+                    float shadow = 1.0f;
+                    if (x > 0 && z > 0)
+                    {
+                        float dx = heightMap[z * width + x] - heightMap[z * width + (x - 1)];
+                        float dz = heightMap[z * width + x] - heightMap[(z - 1) * width + x];
+                        shadow = 1.0f + (dx + dz) * 0.12f;
+                    }
+
+                    shadow = Math.Clamp(shadow, 0.7f, 1.3f);
+                    float heightFactor = Math.Clamp((h + 64) / 400f + 0.8f, 0.8f, 1.05f);
+                    float finalIntensity = shadow * heightFactor;
+
+                    byte finalR = (byte)Math.Clamp(r * finalIntensity, 0, 255);
+                    byte finalG = (byte)Math.Clamp(g * finalIntensity, 0, 255);
+                    byte finalB = (byte)Math.Clamp(b * finalIntensity, 0, 255);
+
+                    pixels[idx] = (uint)((255 << 24) | (finalR << 16) | (finalG << 8) | finalB);
                 }
+            });
 
-                // 限制阴影范围，防止纯黑或纯白
-                shadow = Math.Clamp(shadow, 0.7f, 1.3f);
-
-                // 可选：根据海拔高度轻微着色（模拟大气厚度或高度感）
-                float heightFactor = Math.Clamp((heightMap[x, z] + 64) / 400f + 0.8f, 0.8f, 1.05f);
-                float finalIntensity = shadow * heightFactor;
-
-                image[x, z] = new Rgba32(
-                    (byte)Math.Clamp(color.R * finalIntensity, 0, 255),
-                    (byte)Math.Clamp(color.G * finalIntensity, 0, 255),
-                    (byte)Math.Clamp(color.B * finalIntensity, 0, 255),
-                    255
-                );
-            }
+            CopyPixelsToImage(image, pixels, width, height);
+        }
+        finally
+        {
+            ArrayPool<uint>.Shared.Return(pixels);
         }
 
         return image;
@@ -190,7 +360,7 @@ public class MapRenderer
 
         bool foundWater = false;
         int waterSurfaceY = 0;
-        RgbaColor waterColor = new RgbaColor(44, 88, 178, 255); // 默认水色，实际应从 palette 获取
+        RgbaColor waterColor = new RgbaColor(44, 88, 178, 255);
 
         for (var y = (int)height; y >= -64; y--)
         {
@@ -198,7 +368,6 @@ public class MapRenderer
 
             if (_palette.IsAirBlock(blockName)) continue;
 
-            // 处理水体
             if (blockName == "minecraft:water" || blockName == "minecraft:flowing_water")
             {
                 if (!foundWater)
@@ -207,20 +376,14 @@ public class MapRenderer
                     waterSurfaceY = y;
                     waterColor = _palette.SurfaceBlockColor(blockName, biomeId, true);
                 }
-
-                // 继续向下探测水底
                 continue;
             }
 
-            // 探测到固体（水底或陆地）
             var solidColor = _palette.SurfaceBlockColor(blockName, biomeId, true);
 
             if (foundWater)
             {
-                // 计算深度：深度越大，水色占比越高
                 int depth = waterSurfaceY - y;
-                // 简单的线性混合 (lerp)
-                // 深度 0-15 格之间变化，超过 15 格基本看不见底
                 float blend = Math.Clamp(depth / 15f, 0.2f, 0.8f);
 
                 return new RgbaColor(
@@ -237,7 +400,6 @@ public class MapRenderer
         return _palette.VoidColor;
     }
 
-// 辅助方法：获取指定高度的方块名
     private string GetBlockNameAt(ChunkPos pos, int x, int y, int z, Dictionary<(ChunkPos, sbyte), SubChunk?> cache)
     {
         sbyte subY = (sbyte)(y >> 4);
@@ -256,109 +418,57 @@ public class MapRenderer
     {
         var width = (maxChunkX - minChunkX + 1) * 16;
         var height = (maxChunkZ - minChunkZ + 1) * 16;
-        var image = new Image<Rgba32>(width, height);
 
-        var subChunksCache = new Dictionary<(ChunkPos, sbyte), SubChunk?>();
+        var pixelData = ArrayPool<uint>.Shared.Rent(width * height);
 
-        for (var chunkZ = minChunkZ; chunkZ <= maxChunkZ; chunkZ++)
+        try
         {
-            for (var chunkX = minChunkX; chunkX <= maxChunkX; chunkX++)
+            Parallel.For(minChunkZ, maxChunkZ + 1, chunkZ =>
             {
-                var pos = new ChunkPos(chunkX, chunkZ, dimension);
-                var (_, biomes) = _world.GetChunkTerrain(pos);
-
-                var offsetX = (chunkX - minChunkX) * 16;
-                var offsetZ = (chunkZ - minChunkZ) * 16;
-
-                for (var z = 0; z < 16; z++)
+                for (var chunkX = minChunkX; chunkX <= maxChunkX; chunkX++)
                 {
-                    for (var x = 0; x < 16; x++)
-                    {
-                        var biomeId = biomes?[z, x] ?? 0;
-                        var color = GetBlockAtLayer(pos, x, z, layerY, biomeId, subChunksCache);
-                        image[offsetX + x, offsetZ + z] = new Rgba32(color.R, color.G, color.B, color.A);
-                    }
+                    ProcessLayerChunk(chunkX, chunkZ, dimension, minChunkX, minChunkZ, width, layerY, pixelData);
                 }
+            });
+
+            var image = new Image<Rgba32>(width, height);
+            CopyPixelsToImage(image, pixelData, width, height);
+            return image;
+        }
+        finally
+        {
+            ArrayPool<uint>.Shared.Return(pixelData);
+        }
+    }
+
+    private void ProcessLayerChunk(int chunkX, int chunkZ, Dimension dimension, int minChunkX, int minChunkZ,
+        int width, int layerY, uint[] pixelData)
+    {
+        var pos = new ChunkPos(chunkX, chunkZ, dimension);
+        var (_, biomes) = _world.GetChunkTerrain(pos);
+
+        var offsetX = (chunkX - minChunkX) * 16;
+        var offsetZ = (chunkZ - minChunkZ) * 16;
+
+        var localCache = new Dictionary<(ChunkPos, sbyte), SubChunk?>();
+
+        for (var z = 0; z < 16; z++)
+        {
+            for (var x = 0; x < 16; x++)
+            {
+                var biomeId = biomes?[z, x] ?? 0;
+                var color = GetBlockAtLayer(pos, x, z, layerY, biomeId, localCache);
+                pixelData[(offsetZ + z) * width + (offsetX + x)] = ((uint)color.A << 24) | ((uint)color.R << 16) | ((uint)color.G << 8) | color.B;
             }
         }
 
-        return image;
+        localCache.Clear();
     }
 
     public Image<Rgba32> RenderCaveSlice(Dimension dimension, int minChunkX, int minChunkZ, int maxChunkX,
         int maxChunkZ, int caveY)
     {
-        var width = (maxChunkX - minChunkX + 1) * 16;
-        var height = (maxChunkZ - minChunkZ + 1) * 16;
-        var image = new Image<Rgba32>(width, height);
-
-        var subChunksCache = new Dictionary<(ChunkPos, sbyte), SubChunk?>();
-
-        for (var chunkZ = minChunkZ; chunkZ <= maxChunkZ; chunkZ++)
-        {
-            for (var chunkX = minChunkX; chunkX <= maxChunkX; chunkX++)
-            {
-                var pos = new ChunkPos(chunkX, chunkZ, dimension);
-                var (_, biomes) = _world.GetChunkTerrain(pos);
-
-                var offsetX = (chunkX - minChunkX) * 16;
-                var offsetZ = (chunkZ - minChunkZ) * 16;
-
-                for (var z = 0; z < 16; z++)
-                {
-                    for (var x = 0; x < 16; x++)
-                    {
-                        var biomeId = biomes?[z, x] ?? 0;
-                        var color = GetBlockAtLayer(pos, x, z, caveY, biomeId, subChunksCache);
-                        image[offsetX + x, offsetZ + z] = new Rgba32(color.R, color.G, color.B, color.A);
-                    }
-                }
-            }
-        }
-
-        return image;
-    }
-
-    private RgbaColor GetSurfaceBlockColor(ChunkPos pos, int localX, int localZ, short height, int biomeId,
-        Dictionary<(ChunkPos, sbyte), SubChunk?> subChunksCache)
-    {
-        if (height < -64)
-            return _palette.VoidColor;
-
-        for (var y = height; y >= -64; y--)
-        {
-            var subChunkY = (sbyte)(y / 16);
-            var localY = y % 16;
-            if (localY < 0)
-            {
-                localY += 16;
-                subChunkY--;
-            }
-
-            var cacheKey = (pos, subChunkY);
-            SubChunk? subChunk;
-            if (!subChunksCache.TryGetValue(cacheKey, out subChunk))
-            {
-                subChunk = _world.GetSubChunk(pos, subChunkY);
-                subChunksCache[cacheKey] = subChunk;
-            }
-
-            if (subChunk == null)
-                continue;
-
-            var blockState = subChunk.BlockStateAt(localX, localY, localZ);
-            if (blockState == null)
-                continue;
-
-            var blockName = blockState.Name;
-
-            if (_palette.IsAirBlock(blockName))
-                continue;
-
-            return _palette.SurfaceBlockColor(blockName, biomeId, true);
-        }
-
-        return _palette.VoidColor;
+        return RenderLayerBlocks(dimension, minChunkX, minChunkZ, maxChunkX, maxChunkZ, caveY);
     }
 
     private RgbaColor GetBlockAtLayer(ChunkPos pos, int localX, int localZ, int y, int biomeId,
@@ -396,5 +506,31 @@ public class MapRenderer
             return _palette.VoidColor;
 
         return _palette.SurfaceBlockColor(blockName, biomeId, true);
+    }
+
+    private void CopyPixelsToImage(Image<Rgba32> image, uint[] pixelData, int width, int height)
+    {
+        var frame = image.Frames.RootFrame;
+        for (var i = 0; i < pixelData.Length && i < width * height; i++)
+        {
+            var p = pixelData[i];
+            var y = i / width;
+            var x = i % width;
+            frame[x, y] = new Rgba32(
+                (byte)((p >> 16) & 0xFF),
+                (byte)((p >> 8) & 0xFF),
+                (byte)(p & 0xFF),
+                (byte)((p >> 24) & 0xFF)
+            );
+        }
+    }
+
+    public void Dispose()
+    {
+        if (_disposed)
+            return;
+
+        _gpuEngine?.Dispose();
+        _disposed = true;
     }
 }
