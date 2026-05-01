@@ -57,6 +57,7 @@ if (!File.Exists(blockColorPath))
 }
 
 var palette = RenderPalette.Load(blockColorPath, biomeColorPath);
+palette.ClearUnmatched();
 Console.WriteLine($"Palette loaded with defaults and custom colors");
 
 var renderer = new MapRenderer(world, palette);
@@ -65,6 +66,25 @@ var outputDir = Path.Combine(basePath, "output");
 Directory.CreateDirectory(outputDir);
 
 Console.WriteLine("\nRendering maps (no size limit)...");
+
+Console.WriteLine("\n4. Rendering surface blocks...");
+try
+{
+    using (var surfaceMap = renderer.RenderSurfaceBlocks(Dimension.Overworld, minX, minZ, maxX, maxZ))
+    {
+        var surfacePath = Path.Combine(outputDir, "surface-blocks.png");
+        surfaceMap.Save(surfacePath);
+        Console.WriteLine($"   Saved: {surfacePath} ({surfaceMap.Width}x{surfaceMap.Height})");
+    }
+}
+catch (Exception ex)
+{
+    Console.WriteLine($"   Error: {ex.Message}");
+}
+
+var missingBlocks = palette.UnmatchedBlocks;
+missingBlocks.ToList().ForEach(Console.WriteLine);
+
 
 Console.WriteLine("\n1. Rendering heightmap...");
 using ( var heightMap = renderer.RenderHeightMap(Dimension.Overworld, minX, minZ, maxX, maxZ))
@@ -89,22 +109,6 @@ using (var rawBiomeMap = renderer.RenderBiome(Dimension.Overworld, minX, minZ, m
     rawBiomeMap.Save(rawBiomePath);
     Console.WriteLine($"   Saved: {rawBiomePath} ({rawBiomeMap.Width}x{rawBiomeMap.Height})");
 }
-
-Console.WriteLine("\n4. Rendering surface blocks...");
-try
-{
-    using (var surfaceMap = renderer.RenderSurfaceBlocks(Dimension.Overworld, minX, minZ, maxX, maxZ))
-    {
-        var surfacePath = Path.Combine(outputDir, "surface-blocks.png");
-        surfaceMap.Save(surfacePath);
-        Console.WriteLine($"   Saved: {surfacePath} ({surfaceMap.Width}x{surfaceMap.Height})");
-    }
-}
-catch (Exception ex)
-{
-    Console.WriteLine($"   Error: {ex.Message}");
-}
-
 Console.WriteLine("\n5. Rendering layer at Y=64...");
 try
 {

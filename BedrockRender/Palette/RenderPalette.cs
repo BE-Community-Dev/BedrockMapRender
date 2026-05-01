@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using System.Collections.Concurrent;
 
 namespace BedrockRender.Palette;
 
@@ -10,7 +11,10 @@ public class RenderPalette
     private readonly Dictionary<int, RgbaColor> _biomeGrassColors = new Dictionary<int, RgbaColor>();
     private readonly Dictionary<int, RgbaColor> _biomeFoliageColors = new Dictionary<int, RgbaColor>();
     private readonly Dictionary<int, RgbaColor> _biomeWaterColors = new Dictionary<int, RgbaColor>();
-    
+
+    private readonly ConcurrentDictionary<string, bool> _unmatchedBlocks = new ConcurrentDictionary<string, bool>();
+    private readonly ConcurrentDictionary<int, bool> _unmatchedBiomes = new ConcurrentDictionary<int, bool>();
+
     public RgbaColor UnknownBiomeColor { get; set; } = new RgbaColor(255, 0, 255, 180);
     public RgbaColor UnknownBlockColor { get; set; } = new RgbaColor(255, 0, 255, 255);
     public RgbaColor MissingChunkColor { get; set; } = new RgbaColor(0, 0, 0, 0);
@@ -21,17 +25,26 @@ public class RenderPalette
     public RgbaColor DefaultWaterColor { get; set; } = new RgbaColor(63, 118, 228, 255);
     public RgbaColor MinHeightColor { get; set; } = new RgbaColor(36, 52, 100, 255);
     public RgbaColor MaxHeightColor { get; set; } = new RgbaColor(242, 244, 232, 255);
-    
+
+    public IReadOnlyCollection<string> UnmatchedBlocks => _unmatchedBlocks.Keys.ToList().AsReadOnly();
+    public IReadOnlyCollection<int> UnmatchedBiomes => _unmatchedBiomes.Keys.ToList().AsReadOnly();
+
+    public void ClearUnmatched()
+    {
+        _unmatchedBlocks.Clear();
+        _unmatchedBiomes.Clear();
+    }
+
     public RenderPalette()
     {
         InsertDefaultBiomes();
         InsertDefaultBlocks();
     }
-    
+
     public static RenderPalette Load(string blockColorPath, string biomeColorPath)
     {
         var palette = new RenderPalette();
-        
+
         if (File.Exists(biomeColorPath))
         {
             try
@@ -41,7 +54,7 @@ public class RenderPalette
             }
             catch { }
         }
-        
+
         if (File.Exists(blockColorPath))
         {
             try
@@ -51,22 +64,22 @@ public class RenderPalette
             }
             catch { }
         }
-        
+
         return palette;
     }
-    
+
     private void MergeBlockJson(string json)
     {
         try
         {
             using var doc = JsonDocument.Parse(json);
             var root = doc.RootElement;
-            
+
             if (root.TryGetProperty("blocks", out var blocks) || root.TryGetProperty("block_colors", out blocks))
             {
                 MergeBlockEntries(blocks);
             }
-            
+
             if (root.TryGetProperty("defaults", out var defaults))
             {
                 if (defaults.TryGetProperty("grass", out var grass))
@@ -79,7 +92,7 @@ public class RenderPalette
         }
         catch { }
     }
-    
+
     private void MergeBlockEntries(JsonElement element)
     {
         if (element.ValueKind == JsonValueKind.Object)
@@ -101,10 +114,10 @@ public class RenderPalette
                 if (item.ValueKind == JsonValueKind.Object)
                 {
                     string? name = null;
-                    
+
                     if (item.TryGetProperty("name", out var nameEl) || item.TryGetProperty("id", out nameEl) || item.TryGetProperty("identifier", out nameEl))
                         name = nameEl.GetString();
-                    
+
                     if (name != null)
                     {
                         var color = ParseBlockColorEntry(item);
@@ -115,19 +128,19 @@ public class RenderPalette
             }
         }
     }
-    
+
     private void MergeBiomeJson(string json)
     {
         try
         {
             using var doc = JsonDocument.Parse(json);
             var root = doc.RootElement;
-            
+
             if (root.TryGetProperty("biomes", out var biomes) || root.TryGetProperty("biome_colors", out biomes))
             {
                 MergeBiomeEntries(biomes);
             }
-            
+
             if (root.TryGetProperty("defaults", out var defaults))
             {
                 if (defaults.TryGetProperty("grass", out var grass))
@@ -140,7 +153,7 @@ public class RenderPalette
         }
         catch { }
     }
-    
+
     private void MergeBiomeEntries(JsonElement element)
     {
         if (element.ValueKind == JsonValueKind.Object)
@@ -150,18 +163,18 @@ public class RenderPalette
                 int? id = null;
                 if (int.TryParse(prop.Name, out var parsedId))
                     id = parsedId;
-                
+
                 var entry = prop.Value;
                 if (entry.ValueKind == JsonValueKind.Object)
                 {
                     if (entry.TryGetProperty("id", out var idEl))
                         id = idEl.GetInt32();
-                    
+
                     var color = ParseColor(entry);
                     if (color.HasValue && id.HasValue)
                     {
                         _biomeColors[id.Value] = color.Value;
-                        
+
                         if (entry.TryGetProperty("grass", out var grass))
                         {
                             var c = ParseColor(grass);
@@ -182,15 +195,15 @@ public class RenderPalette
             }
         }
     }
-    
+
     private RgbaColor? ParseBlockColorEntry(JsonElement element)
     {
         var color = ParseColor(element);
         if (color.HasValue) return color;
-        
+
         if (element.ValueKind == JsonValueKind.Object)
         {
-            foreach (var key in new[] { "color", "map_color", "rgba", "rgb" })
+            foreach (var key in new[] { "default", "color", "map_color", "rgba", "rgb" })
             {
                 if (element.TryGetProperty(key, out var c))
                 {
@@ -199,10 +212,10 @@ public class RenderPalette
                 }
             }
         }
-        
+
         return null;
     }
-    
+
     private RgbaColor? ParseColor(JsonElement element)
     {
         if (element.ValueKind == JsonValueKind.String)
@@ -231,14 +244,14 @@ public class RenderPalette
                 255
             );
         }
-        
+
         return null;
     }
-    
+
     private RgbaColor? ParseHexColor(string hex)
     {
         hex = hex.TrimStart('#').TrimStart("0x".ToCharArray());
-        
+
         if (hex.Length == 6)
         {
             try
@@ -262,15 +275,15 @@ public class RenderPalette
             }
             catch { }
         }
-        
+
         return null;
     }
-    
+
     private string NormalizeBlockName(string name)
     {
         return name.Contains(':') ? name : "minecraft:" + name;
     }
-    
+
     private void InsertDefaultBiomes()
     {
         var defaults = new (int id, byte r, byte g, byte b)[]
@@ -352,13 +365,13 @@ public class RenderPalette
             (168, 60, 150, 80),
             (169, 40, 120, 65),
         };
-        
+
         foreach (var (id, r, g, b) in defaults)
         {
             _biomeColors[id] = new RgbaColor(r, g, b, 255);
         }
     }
-    
+
     private void InsertDefaultBlocks()
     {
         var defaults = new (string name, byte r, byte g, byte b, byte a)[]
@@ -434,102 +447,103 @@ public class RenderPalette
             ("minecraft:flowing_lava", 255, 90, 0, 255),
             ("minecraft:cactus", 35, 116, 49, 255),
         };
-        
+
         foreach (var (name, r, g, b, a) in defaults)
         {
             _blockColors[name] = new RgbaColor(r, g, b, a);
         }
     }
-    
+
     public RgbaColor BiomeColor(int biomeId)
     {
         if (_biomeColors.TryGetValue(biomeId, out var color))
             return color;
+        _unmatchedBiomes[biomeId] = true;
         return UnknownBiomeColor;
     }
-    
+
     public RgbaColor BlockColor(string blockName)
     {
         if (IsAirBlock(blockName))
             return AirColor;
-        
+
         if (_blockColors.TryGetValue(blockName, out var color))
             return color;
-        
+
         var shortName = blockName.Contains(':') ? blockName.Split(':')[1] : blockName;
         if (_blockColors.TryGetValue("minecraft:" + shortName, out color))
             return color;
-        
+
         return CategoryBlockColor(blockName);
     }
-    
+
     public RgbaColor SurfaceBlockColor(string blockName, int? biomeId, bool biomeTint)
     {
         var color = BlockColor(blockName);
-        
+
         if (!biomeTint)
             return WithAlpha(color, 255);
-        
+
         if (IsGrassTintedBlock(blockName))
         {
             var tint = biomeId.HasValue && _biomeGrassColors.TryGetValue(biomeId.Value, out var t) ? t : DefaultGrassColor;
             return MultiplyWithTint(color, tint);
         }
-        
+
         if (IsFoliageTintedBlock(blockName))
         {
             var tint = biomeId.HasValue && _biomeFoliageColors.TryGetValue(biomeId.Value, out var t) ? t : DefaultFoliageColor;
             return MultiplyWithTint(color, tint);
         }
-        
+
         if (IsWaterBlock(blockName))
         {
             var tint = biomeId.HasValue && _biomeWaterColors.TryGetValue(biomeId.Value, out var t) ? t : DefaultWaterColor;
             return MultiplyWithTint(color, tint);
         }
-        
+
         return WithAlpha(color, 255);
     }
-    
+
     public RgbaColor HeightColor(short height, short minHeight, short maxHeight)
     {
         if (minHeight >= maxHeight)
             return MaxHeightColor;
-        
+
         var t = (float)(height - minHeight) / (maxHeight - minHeight);
         t = Math.Clamp(t, 0, 1);
-        
+
         return LerpColor(MinHeightColor, MaxHeightColor, t);
     }
-    
+
     public bool IsAirBlock(string name)
     {
-        return name == "air" || name == "minecraft:air" || 
+        return name == "air" || name == "minecraft:air" ||
                name == "minecraft:cave_air" || name == "minecraft:void_air" ||
                name == "minecraft:light_block" || name == "minecraft:light";
     }
-    
+
     private bool IsWaterBlock(string name)
     {
         return name.Contains("water");
     }
-    
+
     private bool IsGrassTintedBlock(string name)
     {
         return name.Contains("grass_block") || name.EndsWith(":grass") ||
                name.EndsWith(":short_grass") || name.EndsWith(":tall_grass") ||
                name.Contains("fern") || name.Contains("vine");
     }
-    
+
     private bool IsFoliageTintedBlock(string name)
     {
         return name.Contains("leaves") || name.Contains("leaf") || name.Contains("foliage");
     }
-    
+
     private RgbaColor CategoryBlockColor(string name)
     {
         var shortName = name.StartsWith("minecraft:") ? name.Substring(10) : name;
-        
+
         if (shortName.Contains("coral")) return new RgbaColor(210, 88, 110, 255);
         if (shortName.Contains("copper")) return new RgbaColor(179, 109, 77, 255);
         if (shortName.Contains("resin")) return new RgbaColor(226, 112, 32, 255);
@@ -581,10 +595,11 @@ public class RenderPalette
         if (shortName.Contains("lava") || shortName.Contains("magma")) return new RgbaColor(255, 90, 0, 255);
         if (shortName.Contains("obsidian")) return new RgbaColor(25, 20, 36, 255);
         if (shortName.Contains("bedrock")) return new RgbaColor(82, 82, 82, 255);
-        
+
+        _unmatchedBlocks[name] = true;
         return UnknownBlockColor;
     }
-    
+
     private RgbaColor MultiplyWithTint(RgbaColor baseColor, RgbaColor tint)
     {
         return new RgbaColor(
@@ -594,12 +609,12 @@ public class RenderPalette
             255
         );
     }
-    
+
     private RgbaColor WithAlpha(RgbaColor color, byte alpha)
     {
         return new RgbaColor(color.R, color.G, color.B, alpha);
     }
-    
+
     private RgbaColor LerpColor(RgbaColor a, RgbaColor b, float t)
     {
         return new RgbaColor(
