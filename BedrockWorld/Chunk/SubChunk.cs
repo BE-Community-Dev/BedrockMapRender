@@ -11,38 +11,40 @@ public class SubChunk
     {
         if (data == null || data.Length < 1)
             return null;
-        
+
         var version = data[0];
         var subChunk = new SubChunk { Y = y };
-        
+
         if (version == 1)
         {
-            ParsePaletted(data, 1, 1, subChunk);
+            ParsePaletted(data, 2, 1, subChunk);
         }
         else if (version >= 8 && version <= 43)
         {
             var offset = 1;
             var storageCount = data[offset++];
-            
+
             if (version >= 20)
             {
                 offset++;
             }
-            
+
             if (version == 9)
             {
                 offset++;
             }
-            
+
             if (version >= 28)
             {
+                if (offset + 4 > data.Length)
+                    return subChunk;
                 var extraSize = BitConverter.ToInt32(data, offset);
                 offset += 4 + extraSize;
             }
-            
+
             ParsePaletted(data, offset, storageCount, subChunk);
         }
-        
+
         return subChunk;
     }
     
@@ -58,6 +60,8 @@ public class SubChunk
             
             if (bitsPerBlock == 0)
             {
+                if (offset + 4 > data.Length)
+                    break;
                 var palLen = BitConverter.ToInt32(data, offset);
                 offset += 4;
 
@@ -92,14 +96,14 @@ public class SubChunk
             
             if (offset + wordsByteLen > data.Length)
                 break;
-            
+
             var words = new byte[wordsByteLen];
             Array.Copy(data, offset, words, 0, wordsByteLen);
             offset += wordsByteLen;
-            
+
             if (offset + 4 > data.Length)
                 break;
-            
+
             var palLen2 = BitConverter.ToInt32(data, offset);
             offset += 4;
             
