@@ -460,12 +460,7 @@ public class RenderPalette
         if (_blockColors.TryGetValue("minecraft:" + shortName, out color))
             return color;
         
-        var catColor = CategoryBlockColor(blockName);
-        if (catColor == UnknownBlockColor)
-        {
-            Console.WriteLine($"Unknown block: {blockName} (short: {shortName})");
-        }
-        return catColor;
+        return CategoryBlockColor(blockName);
     }
     
     public RgbaColor SurfaceBlockColor(string blockName, int? biomeId, bool biomeTint)
@@ -569,7 +564,7 @@ public class RenderPalette
             shortName.Contains("kelp") || shortName.Contains("lily_pad") || shortName.Contains("moss") ||
             shortName.Contains("roots") || shortName.Contains("azalea") || shortName.Contains("cactus") ||
             shortName.Contains("sugar_cane") || shortName.Contains("vine") || shortName.Contains("reeds") ||
-            shortName.Contains("bamboo")) return new RgbaColor(77, 140, 56, 255);
+            shortName.Contains("bamboo") || shortName.Contains("pumpkin") || shortName.Contains("glow_lichen")) return new RgbaColor(77, 140, 56, 255);
         if (shortName.Contains("hay") || shortName.Contains("sponge") || shortName.Contains("honey")) return new RgbaColor(204, 164, 62, 255);
         if (shortName.Contains("mushroom")) return new RgbaColor(150, 96, 76, 255);
         if (shortName.Contains("torch") || shortName.Contains("lantern") || shortName.Contains("rail") ||

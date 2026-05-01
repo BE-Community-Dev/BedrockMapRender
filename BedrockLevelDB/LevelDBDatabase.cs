@@ -79,9 +79,7 @@ public class LevelDBDatabase : IDisposable
             
             var magic = BitConverter.ToInt64(footer, FooterSize - 8);
             if ((ulong)magic != TableMagic)
-            {
                 return;
-            }
             
             var offset = 0;
             var metaIndexHandle = ReadBlockHandle(footer, ref offset);
@@ -164,37 +162,36 @@ public class LevelDBDatabase : IDisposable
         
         for (var i = 0; i < numRestarts && offset < dataEnd; i++)
         {
-            var restartPos = BitConverter.ToInt32(block, restartOffset + 4 + i * 4);
+            var restartPos = BitConverter.ToInt32(block, dataEnd + i * 4);
             if (restartPos < offset || restartPos >= dataEnd)
                 break;
-            
+
             offset = restartPos;
-            
+
             while (offset < dataEnd)
             {
-                var (shared, nShared, nNonShared, vLen) = DecodeEntryHeader(block, offset);
-                
-                if (offset + nNonShared + vLen > dataEnd)
+                var (shared, nShared, vLen) = DecodeEntryHeader(block, ref offset);
+
+                if (offset + nShared + vLen > dataEnd)
                     break;
-                
-                byte[] key;
+
+                byte[] key = new byte[shared + nShared];
                 if (shared > 0 && lastKey.Length >= shared)
                 {
-                    key = new byte[shared + nNonShared];
                     Array.Copy(lastKey, 0, key, 0, shared);
                 }
-                else
+                else if (shared > 0)
                 {
-                    key = new byte[nNonShared];
+                    shared = lastKey.Length;
                 }
-                
-                Array.Copy(block, offset, key, shared, nNonShared);
-                offset += nNonShared;
-                
+
+                Array.Copy(block, offset, key, shared, nShared);
+                offset += nShared;
+
                 var value = new byte[vLen];
                 Array.Copy(block, offset, value, 0, vLen);
                 offset += vLen;
-                
+
                 entries.Add((key, value));
                 lastKey = key;
             }
@@ -203,12 +200,12 @@ public class LevelDBDatabase : IDisposable
         return entries;
     }
     
-    private (int shared, int nonShared, int valueLen, int nextOffset) DecodeEntryHeader(byte[] data, int offset)
+    private (int shared, int nonShared, int valueLen) DecodeEntryHeader(byte[] data, ref int offset)
     {
         var (shared, s1) = ReadVarInt32(data, ref offset);
         var (nonShared, s2) = ReadVarInt32(data, ref offset);
         var (valueLen, s3) = ReadVarInt32(data, ref offset);
-        return (shared, nonShared, valueLen, offset);
+        return (shared, nonShared, valueLen);
     }
     
     private (int value, int consumed) ReadVarInt32(byte[] data, ref int offset)

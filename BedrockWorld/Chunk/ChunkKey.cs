@@ -42,6 +42,10 @@ public class ChunkKey
         
         var x = BitConverter.ToInt32(data, 0);
         var z = BitConverter.ToInt32(data, 4);
+        
+        if (x < -2_000_000 || x > 2_000_000 || z < -2_000_000 || z > 2_000_000)
+            return null;
+        
         var offset = 8;
         var dimension = Dimension.Overworld;
         
