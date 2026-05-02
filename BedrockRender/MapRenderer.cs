@@ -247,24 +247,13 @@ public class MapRenderer : IDisposable
         var chunkCountZ = maxChunkZ - minChunkZ + 1;
         var totalChunks = chunkCountX * chunkCountZ;
 
-        var processedChunks = 0;
-
-        while (processedChunks < totalChunks)
+        // 直接使用 Parallel.For，消除手工批次管理的额外开销
+        Parallel.For(0, totalChunks, idx =>
         {
-            var batchSize = Math.Min(ChunkBatchSize, totalChunks - processedChunks);
-            var tasks = new Task[batchSize];
-
-            for (var i = 0; i < batchSize; i++)
-            {
-                var idx = processedChunks + i;
-                var cz = idx / chunkCountX + minChunkZ;
-                var cx = idx % chunkCountX + minChunkX;
-                tasks[i] = Task.Run(() => ProcessSurfaceChunk(cx, cz, dimension, minChunkX, minChunkZ, width, blockColors, heightMap));
-            }
-
-            Task.WaitAll(tasks);
-            processedChunks += batchSize;
-        }
+            var cz = idx / chunkCountX + minChunkZ;
+            var cx = idx % chunkCountX + minChunkX;
+            ProcessSurfaceChunk(cx, cz, dimension, minChunkX, minChunkZ, width, blockColors, heightMap);
+        });
     }
 
     private void ProcessSurfaceChunk(int cx, int cz, Dimension dimension, int minChunkX, int minChunkZ,

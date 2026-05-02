@@ -43,7 +43,7 @@ public class LevelDBDatabase : IDisposable
             return;
         }
         
-        foreach (var file in Directory.GetFiles(_path, "*.ldb"))
+        foreach (var file in Directory.EnumerateFiles(_path, "*.ldb").Concat(Directory.EnumerateFiles(_path, "*.sst")))
         {
             try
             {

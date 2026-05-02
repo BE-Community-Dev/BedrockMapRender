@@ -57,7 +57,9 @@
             
             <Border Grid.Column="1" Background="{DynamicResource SystemChromeLowColor}" ClipToBounds="True">
                 <Grid x:Name="MapContainer">
-                    <Image x:Name="MapImage" Stretch="None" RenderTransformOrigin="0.5,0.5" RenderOptions.BitmapInterpolationMode="None" RenderOptions.EdgeMode="Aliased"/>
+                    <Canvas x:Name="MapCanvas" RenderTransformOrigin="0.5,0.5">
+                        <Image x:Name="MapImage" Stretch="None" RenderOptions.BitmapInterpolationMode="None" RenderOptions.EdgeMode="Aliased"/>
+                    </Canvas>
                     <TextBlock x:Name="NoImageText" Text="请选择存档文件夹开始渲染" 
                                HorizontalAlignment="Center" VerticalAlignment="Center" 
                                FontSize="20" Foreground="{DynamicResource SystemAccentColor}"/>

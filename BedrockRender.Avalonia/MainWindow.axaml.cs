@@ -3,6 +3,7 @@ using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Media;
 using Avalonia.Media.Imaging;
+using Avalonia.Platform;
 using Avalonia.Platform.Storage;
 using Avalonia.Threading;
 using BedrockRender.Palette;
@@ -11,14 +12,15 @@ using BedrockWorld.Chunk;
 using SixLabors.ImageSharp;
 using SixLabors.ImageSharp.PixelFormats;
 using System;
-using System.Collections.Concurrent;
+using System.Buffers;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
+using AvaloniaImage = Avalonia.Controls.Image;
 using AvaloniaPoint = Avalonia.Point;
-using ImageSharpPoint = SixLabors.ImageSharp.Point;
 
 namespace BedrockRender.Avalonia;
 
@@ -29,7 +31,9 @@ public partial class MainWindow : Window
     private BedrockWorld.BedrockWorld? _world;
     private MapRenderer? _renderer;
     private Image<Rgba32>? _currentImage;
+    private WriteableBitmap? _writeableBitmap;
     private Bitmap? _avaloniaBitmap;
+    private readonly Dictionary<(int X, int Y), (WriteableBitmap Bitmap, AvaloniaImage Image)> _bitmapTiles = new();
     private List<string> _recentFolders = new();
     private const int MaxRecentFolders = 10;
 
@@ -46,10 +50,11 @@ public partial class MainWindow : Window
     private CancellationTokenSource? _renderCancellation;
     private bool _isRendering;
 
-    private int _minChunkX = -32;
-    private int _minChunkZ = -32;
-    private int _maxChunkX = 32;
-    private int _maxChunkZ = 32;
+    private int _minChunkX = -64;
+    private int _minChunkZ = -64;
+    private int _maxChunkX = 64;
+    private int _maxChunkZ = 64;
+    private List<ChunkPos>? _cachedChunkList;
 
     private readonly object _imageLock = new();
     private uint[]? _currentPixelBuffer;
@@ -61,12 +66,16 @@ public partial class MainWindow : Window
 
     private DispatcherTimer? _renderThrottleTimer;
     private bool _pendingRenderRequest;
-    
+
     private readonly object _updateLock = new();
     private bool _imageUpdateNeeded;
     private DispatcherTimer? _imageUpdateTimer;
-    private DateTime _lastYSliderChange;
-    private CancellationTokenSource? _ySliderCancellation;
+    private int _dirtyMinX = int.MaxValue;
+    private int _dirtyMinY = int.MaxValue;
+    private int _dirtyMaxX = -1;
+    private int _dirtyMaxY = -1;
+    private bool _imageUpdateInProgress;
+    private const int BitmapTileSize = 4096;
 
     public MainWindow()
     {
@@ -83,7 +92,7 @@ public partial class MainWindow : Window
     {
         _transformGroup.Children.Add(_scaleTransform);
         _transformGroup.Children.Add(_translateTransform);
-        MapImage.RenderTransform = _transformGroup;
+        MapCanvas.RenderTransform = _transformGroup;
     }
 
     private void InitializeEvents()
@@ -110,7 +119,7 @@ public partial class MainWindow : Window
     private void InitializeCoordinateTimer()
     {
         _coordinateTimer = new DispatcherTimer();
-        _coordinateTimer.Interval = TimeSpan.FromMilliseconds(33);
+        _coordinateTimer.Interval = TimeSpan.FromMilliseconds(100);
         _coordinateTimer.Tick += CoordinateTimer_Tick;
         _coordinateTimer.Start();
     }
@@ -118,7 +127,7 @@ public partial class MainWindow : Window
     private void InitializeRenderThrottleTimer()
     {
         _renderThrottleTimer = new DispatcherTimer();
-        _renderThrottleTimer.Interval = TimeSpan.FromMilliseconds(50);
+        _renderThrottleTimer.Interval = TimeSpan.FromMilliseconds(100);
         _renderThrottleTimer.Tick += RenderThrottleTimer_Tick;
         _renderThrottleTimer.Start();
     }
@@ -126,7 +135,7 @@ public partial class MainWindow : Window
     private void InitializeImageUpdateTimer()
     {
         _imageUpdateTimer = new DispatcherTimer();
-        _imageUpdateTimer.Interval = TimeSpan.FromMilliseconds(66);
+        _imageUpdateTimer.Interval = TimeSpan.FromMilliseconds(100);
         _imageUpdateTimer.Tick += ImageUpdateTimer_Tick;
         _imageUpdateTimer.Start();
     }
@@ -183,6 +192,22 @@ public partial class MainWindow : Window
             CurrentFolderText.Text = folderPath;
             NoImageText.IsVisible = false;
 
+            StatusText.Text = "正在扫描地图边界...";
+            var chunks = _streamingWorld.ListChunkPositions(_currentDimension);
+            _cachedChunkList = chunks;
+            if (chunks.Count > 0)
+            {
+                _minChunkX = chunks.Min(c => c.X);
+                _minChunkZ = chunks.Min(c => c.Z);
+                _maxChunkX = chunks.Max(c => c.X);
+                _maxChunkZ = chunks.Max(c => c.Z);
+                var width = ((long)_maxChunkX - _minChunkX + 1) * 16;
+                var height = ((long)_maxChunkZ - _minChunkZ + 1) * 16;
+                var memoryMb = width * height * sizeof(uint) / 1024d / 1024d;
+                StatusText.Text = $"发现地图: {_minChunkX}..{_maxChunkX}, {_minChunkZ}..{_maxChunkZ} ({chunks.Count} 个区块, {width}x{height}, 缓冲约 {memoryMb:F1} MB)";
+            }
+
+            await Task.Delay(500);
             await StartStreamingRender();
 
             StatusText.Text = "世界加载成功";
@@ -277,6 +302,24 @@ public partial class MainWindow : Window
         else if (EndRadio.IsChecked == true)
             _currentDimension = Dimension.End;
 
+        if (_streamingWorld != null)
+        {
+            StatusText.Text = "正在扫描地图边界...";
+            var chunks = _streamingWorld.ListChunkPositions(_currentDimension);
+            _cachedChunkList = chunks;
+            if (chunks.Count > 0)
+            {
+                _minChunkX = chunks.Min(c => c.X);
+                _minChunkZ = chunks.Min(c => c.Z);
+                _maxChunkX = chunks.Max(c => c.X);
+                _maxChunkZ = chunks.Max(c => c.Z);
+                var width = ((long)_maxChunkX - _minChunkX + 1) * 16;
+                var height = ((long)_maxChunkZ - _minChunkZ + 1) * 16;
+                var memoryMb = width * height * sizeof(uint) / 1024d / 1024d;
+                StatusText.Text = $"发现地图: {_minChunkX}..{_maxChunkX}, {_minChunkZ}..{_maxChunkZ} ({chunks.Count} 个区块, {width}x{height}, 缓冲约 {memoryMb:F1} MB)";
+            }
+        }
+
         RequestRender();
     }
 
@@ -286,33 +329,13 @@ public partial class MainWindow : Window
         {
             LayerYValue.Text = ((int)LayerYSlider.Value).ToString();
             _currentLayerY = (int)LayerYSlider.Value;
-            _lastYSliderChange = DateTime.Now;
-            RequestYSliderRender();
+            RequestRender();
         }
     }
 
     private void RequestRender()
     {
         _pendingRenderRequest = true;
-    }
-
-    private async void RequestYSliderRender()
-    {
-        _ySliderCancellation?.Cancel();
-        _ySliderCancellation = new CancellationTokenSource();
-        var token = _ySliderCancellation.Token;
-
-        try
-        {
-            await Task.Delay(80, token);
-            if (!token.IsCancellationRequested)
-            {
-                RequestRender();
-            }
-        }
-        catch (OperationCanceledException)
-        {
-        }
     }
 
     private async void RenderThrottleTimer_Tick(object? sender, EventArgs e)
@@ -342,18 +365,33 @@ public partial class MainWindow : Window
 
         try
         {
-            var width = (_maxChunkX - _minChunkX + 1) * 16;
-            var height = (_maxChunkZ - _minChunkZ + 1) * 16;
+            var widthLong = ((long)_maxChunkX - _minChunkX + 1) * 16;
+            var heightLong = ((long)_maxChunkZ - _minChunkZ + 1) * 16;
+            var pixelCount = widthLong * heightLong;
+            if (widthLong <= 0 || heightLong <= 0 || widthLong > int.MaxValue || heightLong > int.MaxValue || pixelCount > Array.MaxLength)
+            {
+                StatusText.Text = $"地图尺寸过大，无法用单张位图渲染: {widthLong}x{heightLong}，需要切片渲染";
+                return;
+            }
+
+            var width = (int)widthLong;
+            var height = (int)heightLong;
 
             lock (_imageLock)
             {
-                if (_currentPixelBuffer == null || _currentWidth != width || _currentHeight != height)
-                {
-                    _currentPixelBuffer = new uint[width * height];
-                    Array.Fill(_currentPixelBuffer, 0u);
-                    _currentWidth = width;
-                    _currentHeight = height;
-                }
+                _currentPixelBuffer = new uint[width * height];
+                Array.Fill(_currentPixelBuffer, 0u);
+                _currentWidth = width;
+                _currentHeight = height;
+            }
+
+            lock (_updateLock)
+            {
+                _dirtyMinX = 0;
+                _dirtyMinY = 0;
+                _dirtyMaxX = width - 1;
+                _dirtyMaxY = height - 1;
+                _imageUpdateNeeded = true;
             }
 
             StatusText.Text = "正在渲染地图...";
@@ -369,6 +407,7 @@ public partial class MainWindow : Window
                     _minChunkZ,
                     _maxChunkX,
                     _maxChunkZ,
+                    _cachedChunkList,
                     -64,
                     320,
                     _currentLayerY,
@@ -378,10 +417,7 @@ public partial class MainWindow : Window
 
             if (!token.IsCancellationRequested)
             {
-                lock (_updateLock)
-                {
-                    _imageUpdateNeeded = true;
-                }
+                await UpdateImageFromBufferAsync();
                 StatusText.Text = "渲染完成";
             }
         }
@@ -414,125 +450,279 @@ public partial class MainWindow : Window
 
     private void OnChunkRendered(ChunkRenderResult result)
     {
-        if (_currentPixelBuffer == null)
-            return;
-
-        var pos = result.Position;
-        var offsetX = (pos.X - _minChunkX) * 16;
-        var offsetZ = (pos.Z - _minChunkZ) * 16;
-
-        lock (_imageLock)
+        try
         {
-            for (var z = 0; z < 16; z++)
-            {
-                for (var x = 0; x < 16; x++)
-                {
-                    var imgX = offsetX + x;
-                    var imgZ = offsetZ + z;
+            if (_currentPixelBuffer == null)
+                return;
 
-                    if (imgX >= 0 && imgX < _currentWidth && imgZ >= 0 && imgZ < _currentHeight)
-                    {
-                        _currentPixelBuffer[imgZ * _currentWidth + imgX] = result.PixelData[z * 16 + x];
-                    }
+            var pos = result.Position;
+            var offsetX = (pos.X - _minChunkX) * 16;
+            var offsetZ = (pos.Z - _minChunkZ) * 16;
+            var copiedAny = false;
+
+            lock (_imageLock)
+            {
+                // 使用行级 Array.Copy 代替逐像素写入，减少循环和边界检查开销
+                for (var z = 0; z < 16; z++)
+                {
+                    var imgZ = offsetZ + z;
+                    if (imgZ < 0 || imgZ >= _currentHeight) continue;
+                    if (offsetX < 0 || offsetX + 16 > _currentWidth) continue;
+
+                    var srcOffset = z * 16;
+                    var dstOffset = imgZ * _currentWidth + offsetX;
+                    Array.Copy(result.PixelData, srcOffset, _currentPixelBuffer, dstOffset, 16);
+                    copiedAny = true;
+                }
+            }
+
+            if (copiedAny)
+            {
+                lock (_updateLock)
+                {
+                    _dirtyMinX = Math.Min(_dirtyMinX, offsetX);
+                    _dirtyMinY = Math.Min(_dirtyMinY, offsetZ);
+                    _dirtyMaxX = Math.Max(_dirtyMaxX, offsetX + 15);
+                    _dirtyMaxY = Math.Max(_dirtyMaxY, offsetZ + 15);
+                    _imageUpdateNeeded = true;
                 }
             }
         }
-
-        lock (_updateLock)
+        finally
         {
-            _imageUpdateNeeded = true;
+            // 归还池化数组，避免取消/异常路径泄漏
+            if (result.PixelDataFromPool)
+                ArrayPool<uint>.Shared.Return(result.PixelData);
         }
     }
 
     private async void ImageUpdateTimer_Tick(object? sender, EventArgs e)
     {
-        bool needsUpdate = false;
+        bool needsUpdate;
         lock (_updateLock)
         {
             needsUpdate = _imageUpdateNeeded;
-            _imageUpdateNeeded = false;
+            if (!needsUpdate || _imageUpdateInProgress)
+                return;
+
+            _imageUpdateInProgress = true;
         }
 
-        if (needsUpdate)
+        try
         {
             await UpdateImageFromBufferAsync();
+        }
+        finally
+        {
+            lock (_updateLock)
+            {
+                _imageUpdateInProgress = false;
+            }
         }
     }
 
     private async Task UpdateImageFromBufferAsync()
     {
-        uint[]? bufferCopy = null;
-        int[]? heightMapCopy = null;
-        int width, height;
+        int width = 0, height = 0;
+        int dirtyMinX, dirtyMinY, dirtyMaxX, dirtyMaxY;
+
+        lock (_updateLock)
+        {
+            if (!_imageUpdateNeeded || _dirtyMaxX < _dirtyMinX || _dirtyMaxY < _dirtyMinY)
+                return;
+
+            dirtyMinX = _dirtyMinX;
+            dirtyMinY = _dirtyMinY;
+            dirtyMaxX = _dirtyMaxX;
+            dirtyMaxY = _dirtyMaxY;
+
+            _dirtyMinX = int.MaxValue;
+            _dirtyMinY = int.MaxValue;
+            _dirtyMaxX = -1;
+            _dirtyMaxY = -1;
+            _imageUpdateNeeded = false;
+        }
 
         lock (_imageLock)
         {
-            if (_currentPixelBuffer == null)
+            if (_currentPixelBuffer == null || _currentWidth <= 0 || _currentHeight <= 0)
                 return;
 
             width = _currentWidth;
             height = _currentHeight;
-            bufferCopy = new uint[_currentPixelBuffer.Length];
-            Array.Copy(_currentPixelBuffer, bufferCopy, _currentPixelBuffer.Length);
         }
 
-        if (_streamingRenderer != null && _streamingRenderer.GlobalHeightMap != null && _currentRenderMode == RenderMode.SurfaceBlocks)
+        dirtyMinX = Math.Clamp(dirtyMinX, 0, width - 1);
+        dirtyMinY = Math.Clamp(dirtyMinY, 0, height - 1);
+        dirtyMaxX = Math.Clamp(dirtyMaxX, 0, width - 1);
+        dirtyMaxY = Math.Clamp(dirtyMaxY, 0, height - 1);
+
+        // 直接在 UI 线程用 WriteableBitmap 写像素；只更新脏区域，避免整图复制和整图重写
+        await Dispatcher.UIThread.InvokeAsync(() =>
         {
-            lock (_imageLock)
+            try
             {
-                heightMapCopy = new int[_streamingRenderer.GlobalHeightMap.Length];
-                Array.Copy(_streamingRenderer.GlobalHeightMap, heightMapCopy, _streamingRenderer.GlobalHeightMap.Length);
+                // 若尺寸变化则重建 WriteableBitmap
+                if (_writeableBitmap == null ||
+                    _writeableBitmap.PixelSize.Width != width ||
+                    _writeableBitmap.PixelSize.Height != height)
+                {
+                    if (width > BitmapTileSize || height > BitmapTileSize)
+                    {
+                        UpdateTiledImageFromBuffer(width, height, dirtyMinX, dirtyMinY, dirtyMaxX, dirtyMaxY);
+                        return;
+                    }
+
+                    ClearBitmapTiles();
+                    _writeableBitmap?.Dispose();
+                    _writeableBitmap = new WriteableBitmap(
+                        new PixelSize(width, height),
+                        new Vector(96, 96),
+                        PixelFormat.Bgra8888,
+                        AlphaFormat.Premul);
+                    MapImage.Source = _writeableBitmap;
+                    MapImage.IsVisible = true;
+                    MapCanvas.Width = width;
+                    MapCanvas.Height = height;
+                    _avaloniaBitmap?.Dispose();
+                    _avaloniaBitmap = null;
+                }
+
+                using var frameBuffer = _writeableBitmap.Lock();
+                unsafe
+                {
+                    var dst = (uint*)frameBuffer.Address.ToPointer();
+                    int stride = frameBuffer.RowBytes / 4;
+                    lock (_imageLock)
+                    {
+                        if (_currentPixelBuffer == null)
+                            return;
+
+                        fixed (uint* src = _currentPixelBuffer)
+                        {
+                            for (int row = dirtyMinY; row <= dirtyMaxY; row++)
+                            {
+                                var srcRow = src + row * width;
+                                var dstRow = dst + row * stride;
+                                // 将 ARGB (A<<24|R<<16|G<<8|B) 转换为 BGRA8888
+                                for (int col = dirtyMinX; col <= dirtyMaxX; col++)
+                                {
+                                    uint p = srcRow[col];
+                                    byte a = (byte)(p >> 24);
+                                    byte r = (byte)(p >> 16);
+                                    byte g = (byte)(p >> 8);
+                                    byte b = (byte)p;
+                                    dstRow[col] = ((uint)a << 24) | ((uint)r << 16) | ((uint)g << 8) | b;
+                                }
+                            }
+                        }
+                    }
+                }
             }
-        }
-
-        byte[]? pngBytes = null;
-        await Task.Run(() =>
-        {
-            uint[]? finalPixels = bufferCopy;
-
-            if (heightMapCopy != null && _streamingRenderer != null && _currentRenderMode == RenderMode.SurfaceBlocks)
+            catch
             {
-                finalPixels = _streamingRenderer.ApplyShadowsToPixelData(bufferCopy, heightMapCopy, width, height);
+                StatusText.Text = $"图像刷新失败: {width}x{height}，当前单张位图可能超过 Avalonia/GPU 纹理限制，需要切片显示";
             }
-
-            using var image = new Image<Rgba32>(width, height);
-            var frame = image.Frames.RootFrame;
-
-            for (var i = 0; i < finalPixels.Length && i < width * height; i++)
-            {
-                var p = finalPixels[i];
-                var y = i / width;
-                var x = i % width;
-                frame[x, y] = new Rgba32(
-                    (byte)((p >> 16) & 0xff),
-                    (byte)((p >> 8) & 0xff),
-                    (byte)(p & 0xff),
-                    (byte)((p >> 24) & 0xff));
-            }
-
-            using var memoryStream = new MemoryStream();
-            image.SaveAsPng(memoryStream);
-            pngBytes = memoryStream.ToArray();
         });
+    }
 
-        if (pngBytes != null)
+    private void UpdateTiledImageFromBuffer(int width, int height, int dirtyMinX, int dirtyMinY, int dirtyMaxX, int dirtyMaxY)
+    {
+        _writeableBitmap?.Dispose();
+        _writeableBitmap = null;
+        _avaloniaBitmap?.Dispose();
+        _avaloniaBitmap = null;
+        MapImage.Source = null;
+        MapImage.IsVisible = false;
+        MapCanvas.Width = width;
+        MapCanvas.Height = height;
+
+        var minTileX = dirtyMinX / BitmapTileSize;
+        var minTileY = dirtyMinY / BitmapTileSize;
+        var maxTileX = dirtyMaxX / BitmapTileSize;
+        var maxTileY = dirtyMaxY / BitmapTileSize;
+
+        for (var tileY = minTileY; tileY <= maxTileY; tileY++)
         {
-            await Dispatcher.UIThread.InvokeAsync(() =>
+            for (var tileX = minTileX; tileX <= maxTileX; tileX++)
             {
-                try
+                var tileOriginX = tileX * BitmapTileSize;
+                var tileOriginY = tileY * BitmapTileSize;
+                var tileWidth = Math.Min(BitmapTileSize, width - tileOriginX);
+                var tileHeight = Math.Min(BitmapTileSize, height - tileOriginY);
+
+                if (!_bitmapTiles.TryGetValue((tileX, tileY), out var tile))
                 {
-                    using var stream = new MemoryStream(pngBytes);
-                    var newBitmap = new Bitmap(stream);
-                    var oldBitmap = _avaloniaBitmap;
-                    _avaloniaBitmap = newBitmap;
-                    MapImage.Source = newBitmap;
-                    oldBitmap?.Dispose();
+                    var bitmap = new WriteableBitmap(
+                        new PixelSize(tileWidth, tileHeight),
+                        new Vector(96, 96),
+                        PixelFormat.Bgra8888,
+                        AlphaFormat.Premul);
+                    var image = new AvaloniaImage
+                    {
+                        Source = bitmap,
+                        Width = tileWidth,
+                        Height = tileHeight,
+                        Stretch = Stretch.None
+                    };
+                    RenderOptions.SetBitmapInterpolationMode(image, BitmapInterpolationMode.None);
+                    RenderOptions.SetEdgeMode(image, EdgeMode.Aliased);
+                    Canvas.SetLeft(image, tileOriginX);
+                    Canvas.SetTop(image, tileOriginY);
+                    MapCanvas.Children.Add(image);
+                    tile = (bitmap, image);
+                    _bitmapTiles[(tileX, tileY)] = tile;
                 }
-                catch
+
+                var copyMinX = Math.Max(dirtyMinX, tileOriginX);
+                var copyMinY = Math.Max(dirtyMinY, tileOriginY);
+                var copyMaxX = Math.Min(dirtyMaxX, tileOriginX + tileWidth - 1);
+                var copyMaxY = Math.Min(dirtyMaxY, tileOriginY + tileHeight - 1);
+                if (copyMinX > copyMaxX || copyMinY > copyMaxY)
+                    continue;
+
+                using var frameBuffer = tile.Bitmap.Lock();
+                unsafe
                 {
+                    var dst = (uint*)frameBuffer.Address.ToPointer();
+                    int dstStride = frameBuffer.RowBytes / 4;
+                    lock (_imageLock)
+                    {
+                        if (_currentPixelBuffer == null)
+                            return;
+
+                        fixed (uint* src = _currentPixelBuffer)
+                        {
+                            for (var y = copyMinY; y <= copyMaxY; y++)
+                            {
+                                var srcRow = src + y * width;
+                                var dstRow = dst + (y - tileOriginY) * dstStride;
+                                for (var x = copyMinX; x <= copyMaxX; x++)
+                                {
+                                    uint p = srcRow[x];
+                                    byte a = (byte)(p >> 24);
+                                    byte r = (byte)(p >> 16);
+                                    byte g = (byte)(p >> 8);
+                                    byte b = (byte)p;
+                                    dstRow[x - tileOriginX] = ((uint)a << 24) | ((uint)r << 16) | ((uint)g << 8) | b;
+                                }
+                            }
+                        }
+                    }
                 }
-            });
+            }
         }
+    }
+
+    private void ClearBitmapTiles()
+    {
+        foreach (var tile in _bitmapTiles.Values)
+        {
+            MapCanvas.Children.Remove(tile.Image);
+            tile.Bitmap.Dispose();
+        }
+
+        _bitmapTiles.Clear();
     }
 
     private async Task RenderMap()
@@ -621,23 +811,56 @@ public partial class MainWindow : Window
         return new Bitmap(memoryStream);
     }
 
+    private WriteableBitmap ConvertToWriteableBitmap(uint[] pixels, int width, int height)
+    {
+        var wb = new WriteableBitmap(
+            new PixelSize(width, height),
+            new Vector(96, 96),
+            PixelFormat.Bgra8888,
+            AlphaFormat.Premul);
+        using var fb = wb.Lock();
+        unsafe
+        {
+            var dst = (uint*)fb.Address.ToPointer();
+            int stride = fb.RowBytes / 4;
+            fixed (uint* src = pixels)
+            {
+                for (int row = 0; row < height; row++)
+                {
+                    var srcRow = src + row * width;
+                    var dstRow = dst + row * stride;
+                    for (int col = 0; col < width; col++)
+                    {
+                        uint p = srcRow[col];
+                        byte a = (byte)(p >> 24);
+                        byte r = (byte)(p >> 16);
+                        byte g = (byte)(p >> 8);
+                        byte b = (byte)p;
+                        dstRow[col] = ((uint)a << 24) | ((uint)r << 16) | ((uint)g << 8) | b;
+                    }
+                }
+            }
+        }
+        return wb;
+    }
+
     private void MapContainer_PointerPressed(object? sender, PointerPressedEventArgs e)
     {
         if (e.GetCurrentPoint(MapContainer).Properties.IsLeftButtonPressed)
         {
             _isDragging = true;
-            _dragStartPoint = e.GetPosition(MapContainer);
+            _dragStartPoint = e.GetCurrentPoint(MapContainer).Position;
             e.Handled = true;
         }
     }
 
     private void MapContainer_PointerMoved(object? sender, PointerEventArgs e)
     {
-        _lastPointerPos = e.GetPosition(MapImage);
+        _lastPointerPos = e.GetCurrentPoint(MapCanvas).Position;
 
         if (_isDragging)
         {
-            var currentPoint = e.GetPosition(MapContainer);
+            var currentPoint = e.GetCurrentPoint(MapContainer).Position;
             var delta = currentPoint - _dragStartPoint;
             _offset = new AvaloniaPoint(_offset.X + delta.X, _offset.Y + delta.Y);
             _translateTransform.X = _offset.X;
@@ -664,7 +887,7 @@ public partial class MainWindow : Window
         if (delta != 0)
         {
             var zoomFactor = delta > 0 ? 1.2 : 0.8;
-            var pos = e.GetPosition(MapImage);
+            var pos = e.GetCurrentPoint(MapCanvas).Position;
             ZoomAtPoint(pos, zoomFactor);
             e.Handled = true;
         }
@@ -712,13 +935,7 @@ public partial class MainWindow : Window
 
     private void CoordinateTimer_Tick(object? sender, EventArgs e)
     {
-        if (_currentImage == null || _world == null)
-        {
-            CoordinatesText.Text = "X: --, Z: --";
-            return;
-        }
-
-        if (!_lastPointerPos.HasValue)
+        if (_currentWidth <= 0 || _world == null || !_lastPointerPos.HasValue)
         {
             CoordinatesText.Text = "X: --, Z: --";
             return;
@@ -728,7 +945,7 @@ public partial class MainWindow : Window
         var x = (int)((pos.X - _offset.X) / _currentScale);
         var z = (int)((pos.Y - _offset.Y) / _currentScale);
 
-        if (x >= 0 && x < _currentImage.Width && z >= 0 && z < _currentImage.Height)
+        if (x >= 0 && x < _currentWidth && z >= 0 && z < _currentHeight)
         {
             var worldX = _minChunkX * 16 + x;
             var worldZ = _minChunkZ * 16 + z;
@@ -750,11 +967,11 @@ public partial class MainWindow : Window
         _renderer?.Dispose();
         _streamingRenderer?.Dispose();
         _currentImage?.Dispose();
+        _writeableBitmap?.Dispose();
+        ClearBitmapTiles();
         _avaloniaBitmap?.Dispose();
         _renderCancellation?.Cancel();
-        _ySliderCancellation?.Cancel();
         _renderCancellation?.Dispose();
-        _ySliderCancellation?.Dispose();
         base.OnClosed(e);
     }
 }
