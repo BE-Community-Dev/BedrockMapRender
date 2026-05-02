@@ -58,6 +58,7 @@ public partial class MainWindow : Window
 
     private readonly object _imageLock = new();
     private uint[]? _currentPixelBuffer;
+    private int _currentPixelBufferLength;
     private int _currentWidth;
     private int _currentHeight;
     private RenderMode _currentRenderMode = RenderMode.SurfaceBlocks;
@@ -174,8 +175,12 @@ public partial class MainWindow : Window
         {
             StatusText.Text = "正在加载世界...";
 
+            _renderCancellation?.Cancel();
+            _renderer?.Dispose();
+            _streamingRenderer?.Dispose();
             _world?.Dispose();
             _streamingWorld?.Dispose();
+            ReleaseImageResources(returnPixelBuffer: true);
 
             _world = new BedrockWorld.BedrockWorld(folderPath);
             _streamingWorld = new StreamingWorld(folderPath);
@@ -355,7 +360,8 @@ public partial class MainWindow : Window
         if (_isRendering)
         {
             _renderCancellation?.Cancel();
-            await Task.Delay(50);
+            _pendingRenderRequest = true;
+            return;
         }
 
         _isRendering = true;
@@ -379,8 +385,8 @@ public partial class MainWindow : Window
 
             lock (_imageLock)
             {
-                _currentPixelBuffer = new uint[width * height];
-                Array.Fill(_currentPixelBuffer, 0u);
+                EnsurePixelBuffer((int)pixelCount);
+                Array.Clear(_currentPixelBuffer!, 0, (int)pixelCount);
                 _currentWidth = width;
                 _currentHeight = height;
             }
@@ -618,6 +624,9 @@ public partial class MainWindow : Window
                         }
                     }
                 }
+
+                MapImage.InvalidateVisual();
+                MapCanvas.InvalidateVisual();
             }
             catch
             {
@@ -636,6 +645,7 @@ public partial class MainWindow : Window
         MapImage.IsVisible = false;
         MapCanvas.Width = width;
         MapCanvas.Height = height;
+        RemoveOutOfBoundsBitmapTiles(width, height);
 
         var minTileX = dirtyMinX / BitmapTileSize;
         var minTileY = dirtyMinY / BitmapTileSize;
@@ -710,8 +720,67 @@ public partial class MainWindow : Window
                         }
                     }
                 }
+
+                tile.Image.InvalidateVisual();
             }
         }
+
+        MapCanvas.InvalidateVisual();
+    }
+
+    private void EnsurePixelBuffer(int pixelCount)
+    {
+        if (_currentPixelBuffer != null && _currentPixelBufferLength >= pixelCount)
+            return;
+
+        if (_currentPixelBuffer != null)
+            ArrayPool<uint>.Shared.Return(_currentPixelBuffer, clearArray: false);
+
+        _currentPixelBuffer = ArrayPool<uint>.Shared.Rent(pixelCount);
+        _currentPixelBufferLength = _currentPixelBuffer.Length;
+    }
+
+    private void RemoveOutOfBoundsBitmapTiles(int width, int height)
+    {
+        var maxTileX = Math.Max(0, (width - 1) / BitmapTileSize);
+        var maxTileY = Math.Max(0, (height - 1) / BitmapTileSize);
+        var keysToRemove = _bitmapTiles.Keys
+            .Where(key => key.X > maxTileX || key.Y > maxTileY)
+            .ToList();
+
+        foreach (var key in keysToRemove)
+        {
+            var tile = _bitmapTiles[key];
+            MapCanvas.Children.Remove(tile.Image);
+            tile.Bitmap.Dispose();
+            _bitmapTiles.Remove(key);
+        }
+    }
+
+    private void ReleaseImageResources(bool returnPixelBuffer)
+    {
+        lock (_imageLock)
+        {
+            if (returnPixelBuffer && _currentPixelBuffer != null)
+            {
+                ArrayPool<uint>.Shared.Return(_currentPixelBuffer, clearArray: false);
+                _currentPixelBuffer = null;
+                _currentPixelBufferLength = 0;
+            }
+
+            _currentWidth = 0;
+            _currentHeight = 0;
+        }
+
+        _writeableBitmap?.Dispose();
+        _writeableBitmap = null;
+        _avaloniaBitmap?.Dispose();
+        _avaloniaBitmap = null;
+        _currentImage?.Dispose();
+        _currentImage = null;
+        MapImage.Source = null;
+        MapImage.IsVisible = false;
+        ClearBitmapTiles();
     }
 
     private void ClearBitmapTiles()
@@ -966,10 +1035,7 @@ public partial class MainWindow : Window
         _streamingWorld?.Dispose();
         _renderer?.Dispose();
         _streamingRenderer?.Dispose();
-        _currentImage?.Dispose();
-        _writeableBitmap?.Dispose();
-        ClearBitmapTiles();
-        _avaloniaBitmap?.Dispose();
+        ReleaseImageResources(returnPixelBuffer: true);
         _renderCancellation?.Cancel();
         _renderCancellation?.Dispose();
         base.OnClosed(e);

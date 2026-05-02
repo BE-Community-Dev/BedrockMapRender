@@ -151,15 +151,16 @@ public readonly partial struct SurfaceBlockShader : IComputeShader
             return;
         }
 
-        float shadow = 1.0f;
-        if (x > 0 && z > 0)
-        {
-            float dx = HeightMap[z * Width + x] - HeightMap[z * Width + (x - 1)];
-            float dz = HeightMap[z * Width + x] - HeightMap[(z - 1) * Width + x];
-            shadow = 1.0f + (dx + dz) * 0.12f;
-        }
+        float nw = GetHeightOrSelf(x - 1, z - 1, h);
+        float n = GetHeightOrSelf(x, z - 1, h);
+        float w = GetHeightOrSelf(x - 1, z, h);
+        float se = GetHeightOrSelf(x + 1, z + 1, h);
+        float s = GetHeightOrSelf(x, z + 1, h);
+        float e = GetHeightOrSelf(x + 1, z, h);
 
-        shadow = clamp(shadow, 0.7f, 1.3f);
+        float shadeDrop = clamp(Max(Max(nw - h, n - h), w - h), 0.0f, 12.0f);
+        float lightDrop = clamp(Max(Max(h - se, h - s), h - e), 0.0f, 12.0f);
+        float shadow = clamp(1.0f - shadeDrop * 0.18f + lightDrop * 0.081f, 0.55f, 1.18f);
         float heightFactor = clamp((h + 64) / 400f + 0.8f, 0.8f, 1.05f);
         float finalIntensity = shadow * heightFactor;
 
@@ -174,5 +175,18 @@ public readonly partial struct SurfaceBlockShader : IComputeShader
     static float clamp(float v, float min, float max)
     {
         return v < min ? min : v > max ? max : v;
+    }
+
+    static float Max(float a, float b)
+    {
+        return a > b ? a : b;
+    }
+
+    float GetHeightOrSelf(int x, int z, int fallback)
+    {
+        if (x < 0 || z < 0 || x >= Width || z >= Height)
+            return fallback;
+
+        return HeightMap[z * Width + x];
     }
 }

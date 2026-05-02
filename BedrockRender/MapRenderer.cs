@@ -35,6 +35,10 @@ public class MapRenderer : IDisposable
 
     private const int MaxChunkCacheSize = 64;
     private const int ChunkBatchSize = 8;
+    private const float DropShadowStrength = 0.18f;
+    private const float DropShadowMaxHeightDelta = 12f;
+    private const float MinDropShadow = 0.55f;
+    private const float MaxDropHighlight = 1.18f;
 
     public static RenderEngine DefaultEngine { get; private set; } = RenderEngine.Auto;
 
@@ -312,15 +316,7 @@ public class MapRenderer : IDisposable
                         continue;
                     }
 
-                    float shadow = 1.0f;
-                    if (x > 0 && z > 0)
-                    {
-                        float dx = heightMap[z * width + x] - heightMap[z * width + (x - 1)];
-                        float dz = heightMap[z * width + x] - heightMap[(z - 1) * width + x];
-                        shadow = 1.0f + (dx + dz) * 0.12f;
-                    }
-
-                    shadow = Math.Clamp(shadow, 0.7f, 1.3f);
+                    var shadow = CalculateDropShadow(heightMap, width, height, x, z);
                     float heightFactor = Math.Clamp((h + 64) / 400f + 0.8f, 0.8f, 1.05f);
                     float finalIntensity = shadow * heightFactor;
 
@@ -340,6 +336,39 @@ public class MapRenderer : IDisposable
         }
 
         return image;
+    }
+
+    internal static float CalculateDropShadow(int[] heightMap, int width, int height, int x, int z)
+    {
+        var center = heightMap[z * width + x];
+        var northWestHeight = GetHeightOrSelf(heightMap, width, height, x - 1, z - 1, center);
+        var northHeight = GetHeightOrSelf(heightMap, width, height, x, z - 1, center);
+        var westHeight = GetHeightOrSelf(heightMap, width, height, x - 1, z, center);
+        var southEastHeight = GetHeightOrSelf(heightMap, width, height, x + 1, z + 1, center);
+        var southHeight = GetHeightOrSelf(heightMap, width, height, x, z + 1, center);
+        var eastHeight = GetHeightOrSelf(heightMap, width, height, x + 1, z, center);
+
+        var shadeDrop = Math.Clamp(
+            Math.Max(Math.Max(northWestHeight - center, northHeight - center), westHeight - center),
+            0,
+            DropShadowMaxHeightDelta);
+        var lightDrop = Math.Clamp(
+            Math.Max(Math.Max(center - southEastHeight, center - southHeight), center - eastHeight),
+            0,
+            DropShadowMaxHeightDelta);
+
+        return Math.Clamp(
+            1.0f - shadeDrop * DropShadowStrength + lightDrop * DropShadowStrength * 0.45f,
+            MinDropShadow,
+            MaxDropHighlight);
+    }
+
+    private static int GetHeightOrSelf(int[] heightMap, int width, int height, int x, int z, int fallback)
+    {
+        if (x < 0 || z < 0 || x >= width || z >= height)
+            return fallback;
+
+        return heightMap[z * width + x];
     }
 
     private RgbaColor GetBlockColorWithWater(ChunkPos pos, int localX, int localZ, short height, int biomeId,

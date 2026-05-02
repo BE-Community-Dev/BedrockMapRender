@@ -44,6 +44,7 @@ public class StreamingMapRenderer : IDisposable
     // 限制并发数为 CPU 核心数，避免过多线程切换和内存压力
     private static readonly int MaxParallelChunks = Math.Max(1, Environment.ProcessorCount);
     private static readonly int ChunkPixelCount = 16 * 16; // 256
+    private static readonly int ShadedChunkWidth = 18;
 
     public static RenderEngine DefaultEngine { get; private set; } = RenderEngine.Auto;
 
@@ -227,6 +228,7 @@ public class StreamingMapRenderer : IDisposable
         var terrainData = _world.GetChunkTerrain(chunkPos);
         var heightMap = terrainData.Item1;
         var biomeData = terrainData.Item2;
+        int[]? shadedHeightMap = mode == RenderMode.SurfaceBlocks ? BuildShadedHeightMap(chunkPos, heightMap) : null;
 
         // 缓存 sbyte 键以避免 tuple 装筱
         var localCache = new Dictionary<sbyte, SubChunk?>(24);
@@ -241,7 +243,8 @@ public class StreamingMapRenderer : IDisposable
                         {
                             var y = heightMap?[z, x] ?? 0;
                             var color = GetBlockColorWithWater(chunkPos, x, z, y, biomeData?[z, x] ?? 0, localCache);
-                            pixelData[z * 16 + x] = ((uint)color.A << 24) | ((uint)color.R << 16) | ((uint)color.G << 8) | color.B;
+                            var colorUint = ((uint)color.A << 24) | ((uint)color.R << 16) | ((uint)color.G << 8) | color.B;
+                            pixelData[z * 16 + x] = ApplyDropShadow(colorUint, y, shadedHeightMap!, x + 1, z + 1);
                             break;
                         }
                     case RenderMode.HeightMap:
@@ -269,6 +272,81 @@ public class StreamingMapRenderer : IDisposable
         }
 
         return result;
+    }
+
+    private int[] BuildShadedHeightMap(ChunkPos chunkPos, short?[,]? centerHeightMap)
+    {
+        var shadedHeightMap = new int[ShadedChunkWidth * ShadedChunkWidth];
+        var terrainCache = new Dictionary<ChunkPos, short?[,]?>
+        {
+            [chunkPos] = centerHeightMap
+        };
+
+        for (var z = -1; z <= 16; z++)
+        {
+            for (var x = -1; x <= 16; x++)
+            {
+                shadedHeightMap[(z + 1) * ShadedChunkWidth + (x + 1)] = GetTerrainHeightAt(chunkPos, x, z, terrainCache);
+            }
+        }
+
+        return shadedHeightMap;
+    }
+
+    private int GetTerrainHeightAt(ChunkPos chunkPos, int localX, int localZ, Dictionary<ChunkPos, short?[,]?> terrainCache)
+    {
+        var chunkX = chunkPos.X;
+        var chunkZ = chunkPos.Z;
+        while (localX < 0)
+        {
+            chunkX--;
+            localX += 16;
+        }
+        while (localX >= 16)
+        {
+            chunkX++;
+            localX -= 16;
+        }
+        while (localZ < 0)
+        {
+            chunkZ--;
+            localZ += 16;
+        }
+        while (localZ >= 16)
+        {
+            chunkZ++;
+            localZ -= 16;
+        }
+
+        var pos = new ChunkPos(chunkX, chunkZ, chunkPos.Dimension);
+        if (!terrainCache.TryGetValue(pos, out var heightMap))
+        {
+            heightMap = _world.GetChunkTerrain(pos).HeightMap;
+            terrainCache[pos] = heightMap;
+        }
+
+        return heightMap?[localZ, localX] ?? -64;
+    }
+
+    private static uint ApplyDropShadow(uint colorUint, int height, int[] shadedHeightMap, int x, int z)
+    {
+        var a = (byte)((colorUint >> 24) & 0xff);
+        if (a == 0)
+            return 0;
+
+        var r = (byte)((colorUint >> 16) & 0xff);
+        var g = (byte)((colorUint >> 8) & 0xff);
+        var b = (byte)(colorUint & 0xff);
+
+        var shadow = MapRenderer.CalculateDropShadow(shadedHeightMap, ShadedChunkWidth, ShadedChunkWidth, x, z);
+        var heightFactor = Math.Clamp((height + 64) / 400f + 0.8f, 0.8f, 1.05f);
+        var finalIntensity = shadow * heightFactor;
+
+        var finalR = (byte)Math.Clamp(r * finalIntensity, 0, 255);
+        var finalG = (byte)Math.Clamp(g * finalIntensity, 0, 255);
+        var finalB = (byte)Math.Clamp(b * finalIntensity, 0, 255);
+
+        return (uint)((255 << 24) | (finalR << 16) | (finalG << 8) | finalB);
     }
 
     private RgbaColor GetBlockColorWithWater(ChunkPos pos, int localX, int localZ, short height, int biomeId, Dictionary<sbyte, SubChunk?> subChunksCache)
