@@ -24,7 +24,7 @@ using AvaloniaPoint = Avalonia.Point;
 
 namespace BedrockRender.Avalonia;
 
-public partial class MainWindow : Window
+public partial class MainWindow : Window, IDisposable
 {
     private StreamingWorld? _streamingWorld;
     private StreamingMapRenderer? _streamingRenderer;
@@ -209,7 +209,8 @@ public partial class MainWindow : Window
                 var width = ((long)_maxChunkX - _minChunkX + 1) * 16;
                 var height = ((long)_maxChunkZ - _minChunkZ + 1) * 16;
                 var memoryMb = width * height * sizeof(uint) / 1024d / 1024d;
-                StatusText.Text = $"发现地图: {_minChunkX}..{_maxChunkX}, {_minChunkZ}..{_maxChunkZ} ({chunks.Count} 个区块, {width}x{height}, 缓冲约 {memoryMb:F1} MB)";
+                StatusText.Text =
+                    $"发现地图: {_minChunkX}..{_maxChunkX}, {_minChunkZ}..{_maxChunkZ} ({chunks.Count} 个区块, {width}x{height}, 缓冲约 {memoryMb:F1} MB)";
             }
 
             await Task.Delay(500);
@@ -247,6 +248,7 @@ public partial class MainWindow : Window
                 .Take(MaxRecentFolders)
                 .ToList();
         }
+
         UpdateRecentFoldersMenu();
     }
 
@@ -321,7 +323,8 @@ public partial class MainWindow : Window
                 var width = ((long)_maxChunkX - _minChunkX + 1) * 16;
                 var height = ((long)_maxChunkZ - _minChunkZ + 1) * 16;
                 var memoryMb = width * height * sizeof(uint) / 1024d / 1024d;
-                StatusText.Text = $"发现地图: {_minChunkX}..{_maxChunkX}, {_minChunkZ}..{_maxChunkZ} ({chunks.Count} 个区块, {width}x{height}, 缓冲约 {memoryMb:F1} MB)";
+                StatusText.Text =
+                    $"发现地图: {_minChunkX}..{_maxChunkX}, {_minChunkZ}..{_maxChunkZ} ({chunks.Count} 个区块, {width}x{height}, 缓冲约 {memoryMb:F1} MB)";
             }
         }
 
@@ -357,6 +360,7 @@ public partial class MainWindow : Window
         if (_streamingRenderer == null || _streamingWorld == null)
             return;
 
+        // 1. 如果正在渲染，取消它并请求重排
         if (_isRendering)
         {
             _renderCancellation?.Cancel();
@@ -365,83 +369,77 @@ public partial class MainWindow : Window
         }
 
         _isRendering = true;
-        _renderCancellation?.Cancel();
         _renderCancellation = new CancellationTokenSource();
         var token = _renderCancellation.Token;
 
         try
         {
+            // 预计算尺寸
             var widthLong = ((long)_maxChunkX - _minChunkX + 1) * 16;
             var heightLong = ((long)_maxChunkZ - _minChunkZ + 1) * 16;
             var pixelCount = widthLong * heightLong;
-            if (widthLong <= 0 || heightLong <= 0 || widthLong > int.MaxValue || heightLong > int.MaxValue || pixelCount > Array.MaxLength)
+
+            // 限制最大分配，防止因为地图过大直接分配几个 G 的数组
+            if (pixelCount > 512 * 1024 * 1024) // 限制为 512M 像素 (约 2GB RAM)
             {
-                StatusText.Text = $"地图尺寸过大，无法用单张位图渲染: {widthLong}x{heightLong}，需要切片渲染";
+                StatusText.Text = "地图范围过大，超出了当前内存优化限制。";
                 return;
             }
-
-            var width = (int)widthLong;
-            var height = (int)heightLong;
 
             lock (_imageLock)
             {
                 EnsurePixelBuffer((int)pixelCount);
                 Array.Clear(_currentPixelBuffer!, 0, (int)pixelCount);
-                _currentWidth = width;
-                _currentHeight = height;
+                _currentWidth = (int)widthLong;
+                _currentHeight = (int)heightLong;
             }
 
+            // 重置脏矩形
             lock (_updateLock)
             {
                 _dirtyMinX = 0;
                 _dirtyMinY = 0;
-                _dirtyMaxX = width - 1;
-                _dirtyMaxY = height - 1;
+                _dirtyMaxX = _currentWidth - 1;
+                _dirtyMaxY = _currentHeight - 1;
                 _imageUpdateNeeded = true;
             }
 
-            StatusText.Text = "正在渲染地图...";
-
+            // 2. 挂载事件
             _streamingRenderer.ProgressChanged += OnRenderProgressChanged;
             _streamingRenderer.ChunkRendered += OnChunkRendered;
 
-            await Task.Run(async () =>
-            {
-                await _streamingRenderer.RenderChunksProgressiveAsync(
-                    _currentDimension,
-                    _minChunkX,
-                    _minChunkZ,
-                    _maxChunkX,
-                    _maxChunkZ,
-                    _cachedChunkList,
-                    -64,
-                    320,
-                    _currentLayerY,
-                    _currentRenderMode,
-                    token);
-            }, token);
+            // 3. 执行异步渲染
+            await _streamingRenderer.RenderChunksProgressiveAsync(
+                _currentDimension,
+                _minChunkX, _minChunkZ, _maxChunkX, _maxChunkZ,
+                _cachedChunkList,
+                -64, 320,
+                _currentLayerY,
+                _currentRenderMode,
+                token);
 
-            if (!token.IsCancellationRequested)
-            {
-                await UpdateImageFromBufferAsync();
-                StatusText.Text = "渲染完成";
-            }
-        }
-        catch (OperationCanceledException)
-        {
-            StatusText.Text = "渲染已取消";
+            StatusText.Text = token.IsCancellationRequested ? "渲染已取消" : "渲染完成";
         }
         catch (Exception ex)
         {
-            StatusText.Text = $"渲染失败: {ex.Message}";
+            StatusText.Text = $"渲染异常: {ex.Message}";
         }
         finally
         {
-            _isRendering = false;
+            // 4. 重要：卸载事件，防止内存泄漏和重复调用
             if (_streamingRenderer != null)
             {
                 _streamingRenderer.ProgressChanged -= OnRenderProgressChanged;
                 _streamingRenderer.ChunkRendered -= OnChunkRendered;
+            }
+
+            _isRendering = false;
+
+            // 如果渲染中途有新的请求，再次触发
+            if (_pendingRenderRequest)
+            {
+                _pendingRenderRequest = false;
+                RequestRender();
             }
         }
     }
@@ -450,56 +448,70 @@ public partial class MainWindow : Window
     {
         Dispatcher.UIThread.Post(() =>
         {
-            StatusText.Text = $"渲染中... {progress.RenderedChunks}/{progress.TotalChunks} ({progress.ProgressPercent:F1}%)";
+            StatusText.Text =
+                $"渲染中... {progress.RenderedChunks}/{progress.TotalChunks} ({progress.ProgressPercent:F1}%)";
         });
     }
 
     private void OnChunkRendered(ChunkRenderResult result)
     {
-        try
+        // 关键修复：使用 using 确保在方法结束时执行 result.Dispose() 从而归还 ArrayPool
+        using (result)
         {
-            if (_currentPixelBuffer == null)
-                return;
-
-            var pos = result.Position;
-            var offsetX = (pos.X - _minChunkX) * 16;
-            var offsetZ = (pos.Z - _minChunkZ) * 16;
-            var copiedAny = false;
-
-            lock (_imageLock)
+            try
             {
-                // 使用行级 Array.Copy 代替逐像素写入，减少循环和边界检查开销
-                for (var z = 0; z < 16; z++)
-                {
-                    var imgZ = offsetZ + z;
-                    if (imgZ < 0 || imgZ >= _currentHeight) continue;
-                    if (offsetX < 0 || offsetX + 16 > _currentWidth) continue;
+                // 安全检查：如果窗口已关闭或缓冲区已释放则跳过
+                if (_currentPixelBuffer == null)
+                    return;
 
-                    var srcOffset = z * 16;
-                    var dstOffset = imgZ * _currentWidth + offsetX;
-                    Array.Copy(result.PixelData, srcOffset, _currentPixelBuffer, dstOffset, 16);
-                    copiedAny = true;
+                var pos = result.Position;
+                // 计算当前 Chunk 在总图像缓冲中的起始偏移坐标
+                var offsetX = (pos.X - _minChunkX) * 16;
+                var offsetZ = (pos.Z - _minChunkZ) * 16;
+                var copiedAny = false;
+
+                lock (_imageLock)
+                {
+                    // 二次检查缓冲区有效性
+                    if (_currentPixelBuffer == null) return;
+
+                    // 逐行将 Chunk 的 16x16 像素数据拷贝到主像素缓冲区
+                    for (var z = 0; z < 16; z++)
+                    {
+                        var imgZ = offsetZ + z;
+
+                        // 边界安全检查，防止坐标越界导致崩溃
+                        if (imgZ < 0 || imgZ >= _currentHeight) continue;
+                        if (offsetX < 0 || offsetX + 16 > _currentWidth) continue;
+
+                        var srcOffset = z * 16;
+                        var dstOffset = imgZ * _currentWidth + offsetX;
+
+                        // 使用高效的 Array.Copy 代替逐个循环赋值，降低 CPU 开销
+                        Array.Copy(result.PixelData, srcOffset, _currentPixelBuffer, dstOffset, 16);
+                        copiedAny = true;
+                    }
+                }
+
+                // 如果有像素写入，更新脏矩形区域以触发 UI 刷新
+                if (copiedAny)
+                {
+                    lock (_updateLock)
+                    {
+                        _dirtyMinX = Math.Min(_dirtyMinX, offsetX);
+                        _dirtyMinY = Math.Min(_dirtyMinY, offsetZ);
+                        _dirtyMaxX = Math.Max(_dirtyMaxX, offsetX + 15);
+                        _dirtyMaxY = Math.Max(_dirtyMaxY, offsetZ + 15);
+                        _imageUpdateNeeded = true;
+                    }
                 }
             }
-
-            if (copiedAny)
+            catch (Exception ex)
             {
-                lock (_updateLock)
-                {
-                    _dirtyMinX = Math.Min(_dirtyMinX, offsetX);
-                    _dirtyMinY = Math.Min(_dirtyMinY, offsetZ);
-                    _dirtyMaxX = Math.Max(_dirtyMaxX, offsetX + 15);
-                    _dirtyMaxY = Math.Max(_dirtyMaxY, offsetZ + 15);
-                    _imageUpdateNeeded = true;
-                }
+                // 捕获异步流水线中的异常，避免因单个 Chunk 错误导致整个程序崩溃
+                System.Diagnostics.Debug.WriteLine($"[Render Error] Chunk {result.Position}: {ex.Message}");
             }
-        }
-        finally
-        {
-            // 归还池化数组，避免取消/异常路径泄漏
-            if (result.PixelDataFromPool)
-                ArrayPool<uint>.Shared.Return(result.PixelData);
-        }
+        } // 此处 result 自动销毁，内部数组通过 ArrayPool.Return 回收
     }
 
     private async void ImageUpdateTimer_Tick(object? sender, EventArgs e)
@@ -635,7 +647,8 @@ public partial class MainWindow : Window
         });
     }
 
-    private void UpdateTiledImageFromBuffer(int width, int height, int dirtyMinX, int dirtyMinY, int dirtyMaxX, int dirtyMaxY)
+    private void UpdateTiledImageFromBuffer(int width, int height, int dirtyMinX, int dirtyMinY, int dirtyMaxX,
+        int dirtyMaxY)
     {
         _writeableBitmap?.Dispose();
         _writeableBitmap = null;
@@ -733,9 +746,13 @@ public partial class MainWindow : Window
         if (_currentPixelBuffer != null && _currentPixelBufferLength >= pixelCount)
             return;
 
+        // 如果已有旧缓冲，先归还
         if (_currentPixelBuffer != null)
+        {
             ArrayPool<uint>.Shared.Return(_currentPixelBuffer, clearArray: false);
+        }
 
+        // 租用新缓冲
         _currentPixelBuffer = ArrayPool<uint>.Shared.Rent(pixelCount);
         _currentPixelBufferLength = _currentPixelBuffer.Length;
     }
@@ -834,9 +851,11 @@ public partial class MainWindow : Window
                     case 2:
                         return _renderer.RenderBiome(dimension, _minChunkX, _minChunkZ, _maxChunkX, _maxChunkZ);
                     case 3:
-                        return _renderer.RenderLayerBlocks(dimension, _minChunkX, _minChunkZ, _maxChunkX, _maxChunkZ, layerY);
+                        return _renderer.RenderLayerBlocks(dimension, _minChunkX, _minChunkZ, _maxChunkX, _maxChunkZ,
+                            layerY);
                     case 4:
-                        return _renderer.RenderCaveSlice(dimension, _minChunkX, _minChunkZ, _maxChunkX, _maxChunkZ, layerY);
+                        return _renderer.RenderCaveSlice(dimension, _minChunkX, _minChunkZ, _maxChunkX, _maxChunkZ,
+                            layerY);
                     default:
                         return _renderer.RenderSurfaceBlocks(dimension, _minChunkX, _minChunkZ, _maxChunkX, _maxChunkZ);
                 }
@@ -910,6 +929,7 @@ public partial class MainWindow : Window
                 }
             }
         }
+
         return wb;
     }
 
@@ -1039,5 +1059,19 @@ public partial class MainWindow : Window
         _renderCancellation?.Cancel();
         _renderCancellation?.Dispose();
         base.OnClosed(e);
+    }
+
+    public void Dispose()
+    {
+        _coordinateTimer?.Stop();
+        _renderThrottleTimer?.Stop();
+        _imageUpdateTimer?.Stop();
+        _world?.Dispose();
+        _streamingWorld?.Dispose();
+        _renderer?.Dispose();
+        _streamingRenderer?.Dispose();
+        ReleaseImageResources(returnPixelBuffer: true);
+        _renderCancellation?.Cancel();
+        _renderCancellation?.Dispose();
     }
 }

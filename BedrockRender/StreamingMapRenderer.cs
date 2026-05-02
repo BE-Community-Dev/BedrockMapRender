@@ -20,15 +20,31 @@ public class RenderProgress
     public float ProgressPercent => TotalChunks > 0 ? (float)RenderedChunks / TotalChunks * 100 : 0;
 }
 
-public class ChunkRenderResult
+// 在 StreamingMapRenderer.cs 文件中找到 ChunkRenderResult 类
+public class ChunkRenderResult : IDisposable // 1. 显式添加接口
 {
     public ChunkPos Position { get; set; }
     public int MinChunkX { get; set; }
     public int MinChunkZ { get; set; }
     public int Width { get; set; }
     public uint[] PixelData { get; set; } = Array.Empty<uint>();
+    
     /// <summary>标记 PixelData 是否来自 ArrayPool，供消费方归还</summary>
     public bool PixelDataFromPool { get; set; }
+
+    // 2. 实现 Dispose 方法
+    public void Dispose()
+    {
+        if (PixelDataFromPool && PixelData != null && PixelData.Length > 0)
+        {
+            // 将数组归还给共享内存池
+            ArrayPool<uint>.Shared.Return(PixelData);
+            
+            // 归还后将引用设为空，防止潜在的重复释放风险
+            PixelData = null!;
+            PixelDataFromPool = false;
+        }
+    }
 }
 
 public class StreamingMapRenderer : IDisposable
