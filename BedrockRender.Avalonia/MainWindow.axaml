@@ -1,0 +1,75 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="BedrockRender.Avalonia.MainWindow"
+        Title="Bedrock Render"
+        Width="1200"
+        Height="800"
+        MinWidth="800"
+        MinHeight="600">
+    <Grid RowDefinitions="Auto,*,Auto">
+        <Menu Grid.Row="0">
+            <MenuItem Header="_File">
+                <MenuItem Header="_Open Folder..." x:Name="OpenFolderMenuItem" HotKey="Ctrl+O"/>
+                <Separator/>
+                <MenuItem Header="_Recent Folders" x:Name="RecentFoldersMenuItem"/>
+                <Separator/>
+                <MenuItem Header="E_xit" x:Name="ExitMenuItem"/>
+            </MenuItem>
+            <MenuItem Header="_View">
+                <MenuItem Header="Zoom _In" x:Name="ZoomInMenuItem" InputGesture="Ctrl+OemPlus"/>
+                <MenuItem Header="Zoom _Out" x:Name="ZoomOutMenuItem" InputGesture="Ctrl+OemMinus"/>
+                <MenuItem Header="_Reset View" x:Name="ResetViewMenuItem" InputGesture="Ctrl+D0"/>
+            </MenuItem>
+        </Menu>
+        
+        <Grid Grid.Row="1" ColumnDefinitions="Auto,*">
+            <Border Grid.Column="0" Width="280" Padding="10" BorderBrush="{DynamicResource SystemAccentColor}" BorderThickness="0,0,1,0">
+                <ScrollViewer>
+                    <StackPanel Spacing="15">
+                        <TextBlock Text="存档文件夹" FontWeight="Bold" FontSize="16"/>
+                        
+                        <Button x:Name="SelectFolderButton" Content="选择文件夹" HorizontalAlignment="Stretch"/>
+                        
+                        <TextBlock x:Name="CurrentFolderText" Text="未选择" TextWrapping="Wrap"/>
+                        
+                        <TextBlock Text="渲染模式" FontWeight="Bold" FontSize="16" Margin="0,10,0,0"/>
+                        
+                        <ComboBox x:Name="RenderModeComboBox" PlaceholderText="选择渲染模式">
+                            <ComboBoxItem Content="表面方块"/>
+                            <ComboBoxItem Content="高度图"/>
+                            <ComboBoxItem Content="生物群系"/>
+                            <ComboBoxItem Content="层级方块"/>
+                            <ComboBoxItem Content="洞穴切片"/>
+                        </ComboBox>
+                        
+                        <TextBlock Text="维度选择" FontWeight="Bold" FontSize="16" Margin="0,10,0,0"/>
+                        
+                        <RadioButton x:Name="OverworldRadio" Content="主世界" IsChecked="True" GroupName="Dimension"/>
+                        <RadioButton x:Name="NetherRadio" Content="下界" GroupName="Dimension"/>
+                        <RadioButton x:Name="EndRadio" Content="末地" GroupName="Dimension"/>
+                        
+                        <TextBlock Text="层级Y坐标" FontWeight="Bold" FontSize="16" Margin="0,10,0,0" x:Name="LayerYLabel" IsVisible="False"/>
+                        <Slider x:Name="LayerYSlider" Minimum="-64" Maximum="320" Value="64" IsVisible="False"/>
+                        <TextBlock x:Name="LayerYValue" Text="64" IsVisible="False"/>
+                    </StackPanel>
+                </ScrollViewer>
+            </Border>
+            
+            <Border Grid.Column="1" Background="{DynamicResource SystemChromeLowColor}" ClipToBounds="True">
+                <Grid x:Name="MapContainer">
+                    <Image x:Name="MapImage" Stretch="None" RenderTransformOrigin="0.5,0.5" RenderOptions.BitmapInterpolationMode="None" RenderOptions.EdgeMode="Aliased"/>
+                    <TextBlock x:Name="NoImageText" Text="请选择存档文件夹开始渲染" 
+                               HorizontalAlignment="Center" VerticalAlignment="Center" 
+                               FontSize="20" Foreground="{DynamicResource SystemAccentColor}"/>
+                </Grid>
+            </Border>
+        </Grid>
+        
+        <Border Grid.Row="2" Background="{DynamicResource SystemChromeLowColor}" Padding="8,4">
+            <Grid ColumnDefinitions="*,Auto">
+                <TextBlock x:Name="CoordinatesText" Text="X: --, Z: --" />
+                <TextBlock x:Name="StatusText" Text="Ready" Grid.Column="1" />
+            </Grid>
+        </Border>
+    </Grid>
+</Window>
