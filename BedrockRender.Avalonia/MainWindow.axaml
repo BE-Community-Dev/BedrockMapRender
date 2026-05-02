@@ -35,8 +35,8 @@
                         <TextBlock Text="渲染模式" FontWeight="Bold" FontSize="16" Margin="0,10,0,0"/>
                         
                         <ComboBox x:Name="RenderModeComboBox" PlaceholderText="选择渲染模式">
-                            <ComboBoxItem Content="表面方块"/>
                             <ComboBoxItem Content="高度图"/>
+                            <ComboBoxItem Content="表面方块"/>
                             <ComboBoxItem Content="生物群系"/>
                             <ComboBoxItem Content="层级方块"/>
                             <ComboBoxItem Content="洞穴切片"/>
