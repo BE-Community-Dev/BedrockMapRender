@@ -12,6 +12,11 @@
   </ItemGroup>
 
   <ItemGroup>
+    <AvaloniaResource Include="data\colors\bedrock-block-color.json" />
+    <AvaloniaResource Include="data\colors\bedrock-biome-color.json" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\BedrockRender\BedrockRender.csproj" />
     <ProjectReference Include="..\BedrockWorld\BedrockWorld.csproj" />
   </ItemGroup>

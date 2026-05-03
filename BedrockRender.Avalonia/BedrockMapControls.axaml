@@ -1,0 +1,18 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="BedrockRender.Avalonia.BedrockMapControls">
+  <Border Padding="8"
+          CornerRadius="8"
+          Background="#D2202020">
+    <StackPanel Orientation="Horizontal" Spacing="6">
+      <Button x:Name="ZoomInButton" Content="+" MinWidth="36" />
+      <Button x:Name="ZoomOutButton" Content="−" MinWidth="36" />
+      <Button x:Name="ResetButton" Content="重置" MinWidth="56" />
+      <TextBlock x:Name="ScaleText"
+                 Text="100%"
+                 VerticalAlignment="Center"
+                 MinWidth="52"
+                 TextAlignment="Center" />
+    </StackPanel>
+  </Border>
+</UserControl>

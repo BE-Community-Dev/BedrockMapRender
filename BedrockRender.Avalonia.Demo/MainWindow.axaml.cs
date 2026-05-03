@@ -2,7 +2,6 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Platform.Storage;
 using Avalonia.Threading;
-using BedrockRender.Palette;
 using BedrockWorld;
 using BedrockWorld.Chunk;
 using System;
@@ -136,10 +135,7 @@ public partial class MainWindow : Window, IDisposable
             {
                 var streamingWorld = new StreamingWorld(folderPath);
 
-                var basePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "data", "colors");
-                var blockColorPath = Path.Combine(basePath, "bedrock-block-color.json");
-                var biomeColorPath = Path.Combine(basePath, "bedrock-biome-color.json");
-                var palette = RenderPalette.Load(blockColorPath, biomeColorPath);
+                var palette = AvaloniaRenderPalette.LoadDefault();
                 var streamingRenderer = new StreamingMapRenderer(streamingWorld, palette);
                 var bounds = ScanChunkBounds(streamingWorld, dimension);
 

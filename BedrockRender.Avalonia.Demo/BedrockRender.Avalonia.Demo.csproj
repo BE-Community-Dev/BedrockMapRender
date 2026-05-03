@@ -24,10 +24,4 @@
     <ProjectReference Include="..\BedrockWorld\BedrockWorld.csproj" />
   </ItemGroup>
 
-  <ItemGroup>
-    <None Update="data\colors\**\*">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </None>
-  </ItemGroup>
-
 </Project>

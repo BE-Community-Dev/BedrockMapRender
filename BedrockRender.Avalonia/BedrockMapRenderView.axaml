@@ -1,0 +1,41 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="BedrockRender.Avalonia.BedrockMapRenderView"
+             Focusable="True"
+             ClipToBounds="True"
+             Background="Transparent">
+  <Grid x:Name="Root"
+        ClipToBounds="True"
+        Background="Transparent">
+    <Canvas x:Name="MapCanvas"
+            Background="Transparent">
+      <Image x:Name="MapImage"
+             Stretch="None"
+             IsVisible="False" />
+    </Canvas>
+
+    <TextBlock x:Name="EmptyTextBlock"
+               Text="请选择存档文件夹开始渲染"
+               FontSize="20"
+               HorizontalAlignment="Center"
+               VerticalAlignment="Center" />
+
+    <Border x:Name="ProgressHost"
+            IsVisible="False"
+            Padding="12,8"
+            Background="#BE181818"
+            HorizontalAlignment="Stretch"
+            VerticalAlignment="Bottom">
+      <StackPanel Spacing="4">
+        <TextBlock x:Name="ProgressText"
+                   Text=""
+                   FontSize="12"
+                   Margin="0,0,0,4" />
+        <ProgressBar x:Name="ProgressBar"
+                     Minimum="0"
+                     Maximum="100"
+                     Height="8" />
+      </StackPanel>
+    </Border>
+  </Grid>
+</UserControl>

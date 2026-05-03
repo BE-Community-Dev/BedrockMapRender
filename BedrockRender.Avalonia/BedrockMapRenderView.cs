@@ -12,7 +12,7 @@ using AvaloniaPoint = Avalonia.Point;
 
 namespace BedrockRender.Avalonia;
 
-public sealed class BedrockMapRenderView : UserControl, IDisposable
+public sealed partial class BedrockMapRenderView : UserControl, IDisposable
 {
     public const double DefaultMinScale = 0.1;
     public const double DefaultMaxScale = 10.0;
@@ -54,81 +54,26 @@ public sealed class BedrockMapRenderView : UserControl, IDisposable
 
     public BedrockMapRenderView()
     {
+        InitializeComponent();
+
+        _root = this.FindControl<Grid>("Root") ?? throw new InvalidOperationException("Root control not found.");
+        _mapCanvas = this.FindControl<Canvas>("MapCanvas") ?? throw new InvalidOperationException("MapCanvas control not found.");
+        _mapImage = this.FindControl<AvaloniaImage>("MapImage") ?? throw new InvalidOperationException("MapImage control not found.");
+        _emptyText = this.FindControl<TextBlock>("EmptyTextBlock") ?? throw new InvalidOperationException("EmptyTextBlock control not found.");
+        _progressHost = this.FindControl<Border>("ProgressHost") ?? throw new InvalidOperationException("ProgressHost control not found.");
+        _progressBar = this.FindControl<ProgressBar>("ProgressBar") ?? throw new InvalidOperationException("ProgressBar control not found.");
+        _progressText = this.FindControl<TextBlock>("ProgressText") ?? throw new InvalidOperationException("ProgressText control not found.");
+
         Focusable = true;
         ClipToBounds = true;
         Background = Brushes.Transparent;
 
         _transformGroup.Children.Add(_scaleTransform);
         _transformGroup.Children.Add(_translateTransform);
-
-        _mapImage = new AvaloniaImage
-        {
-            Stretch = Stretch.None,
-            IsVisible = false
-        };
         RenderOptions.SetBitmapInterpolationMode(_mapImage, BitmapInterpolationMode.None);
         RenderOptions.SetEdgeMode(_mapImage, EdgeMode.Aliased);
-
-        _mapCanvas = new Canvas
-        {
-            RenderTransform = _transformGroup,
-            RenderTransformOrigin = new RelativePoint(0, 0, RelativeUnit.Relative),
-            Background = Brushes.Transparent
-        };
-        _mapCanvas.Children.Add(_mapImage);
-
-        _emptyText = new TextBlock
-        {
-            Text = EmptyText,
-            FontSize = 20,
-            HorizontalAlignment = HorizontalAlignment.Center,
-            VerticalAlignment = VerticalAlignment.Center
-        };
-
-        _progressBar = new ProgressBar
-        {
-            Minimum = 0,
-            Maximum = 100,
-            Height = 8
-        };
-
-        _progressText = new TextBlock
-        {
-            Text = string.Empty,
-            FontSize = 12,
-            Margin = new Thickness(0, 0, 0, 4)
-        };
-
-        _progressHost = new Border
-        {
-            IsVisible = false,
-            Padding = new Thickness(12, 8),
-            Background = new SolidColorBrush(Color.FromArgb(190, 24, 24, 24)),
-            HorizontalAlignment = HorizontalAlignment.Stretch,
-            VerticalAlignment = VerticalAlignment.Bottom,
-            Child = new StackPanel
-            {
-                Spacing = 4,
-                Children =
-                {
-                    _progressText,
-                    _progressBar
-                }
-            }
-        };
-
-        _root = new Grid
-        {
-            ClipToBounds = true,
-            Background = Brushes.Transparent,
-            Children =
-            {
-                _mapCanvas,
-                _emptyText,
-                _progressHost
-            }
-        };
-        Content = _root;
+        _mapCanvas.RenderTransform = _transformGroup;
+        _mapCanvas.RenderTransformOrigin = new RelativePoint(0, 0, RelativeUnit.Relative);
 
         PointerPressed += OnPointerPressed;
         PointerMoved += OnPointerMoved;

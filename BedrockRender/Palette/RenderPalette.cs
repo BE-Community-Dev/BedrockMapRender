@@ -68,7 +68,7 @@ public class RenderPalette
         return palette;
     }
 
-    private void MergeBlockJson(string json)
+    public void MergeBlockJson(string json)
     {
         try
         {
@@ -129,7 +129,7 @@ public class RenderPalette
         }
     }
 
-    private void MergeBiomeJson(string json)
+    public void MergeBiomeJson(string json)
     {
         try
         {
