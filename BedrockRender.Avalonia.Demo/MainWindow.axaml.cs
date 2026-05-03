@@ -22,7 +22,7 @@ using System.Threading.Tasks;
 using AvaloniaImage = Avalonia.Controls.Image;
 using AvaloniaPoint = Avalonia.Point;
 
-namespace BedrockRender.Avalonia;
+namespace BedrockRender.Avalonia.Demo;
 
 public partial class MainWindow : Window, IDisposable
 {

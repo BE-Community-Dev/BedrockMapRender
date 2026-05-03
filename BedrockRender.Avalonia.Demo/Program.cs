@@ -1,7 +1,7 @@
 using Avalonia;
 using System;
 
-namespace BedrockRender.Avalonia;
+namespace BedrockRender.Avalonia.Demo;
 
 class Program
 {
