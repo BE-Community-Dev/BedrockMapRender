@@ -1,5 +1,6 @@
 <Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:br="clr-namespace:BedrockRender.Avalonia;assembly=BedrockRender.Avalonia"
         x:Class="BedrockRender.Avalonia.Demo.MainWindow"
         Title="Bedrock Render"
         Width="1200"
@@ -56,20 +57,23 @@
             </Border>
             
             <Border Grid.Column="1" Background="{DynamicResource SystemChromeLowColor}" ClipToBounds="True">
-                <Grid x:Name="MapContainer">
-                    <Canvas x:Name="MapCanvas" RenderTransformOrigin="0.5,0.5">
-                        <Image x:Name="MapImage" Stretch="None" RenderOptions.BitmapInterpolationMode="None" RenderOptions.EdgeMode="Aliased"/>
-                    </Canvas>
-                    <TextBlock x:Name="NoImageText" Text="请选择存档文件夹开始渲染" 
-                               HorizontalAlignment="Center" VerticalAlignment="Center" 
-                               FontSize="20" Foreground="{DynamicResource SystemAccentColor}"/>
+                <Grid>
+                    <br:BedrockMapRenderView x:Name="MapRenderView" EmptyText="请选择存档文件夹开始渲染"/>
+                    <br:BedrockMapStatusOverlay x:Name="MapStatusOverlay"
+                                                HorizontalAlignment="Left"
+                                                VerticalAlignment="Top"
+                                                Margin="12"/>
+                    <br:BedrockMapControls x:Name="MapControls"
+                                           HorizontalAlignment="Right"
+                                           VerticalAlignment="Top"
+                                           Margin="12"/>
                 </Grid>
             </Border>
         </Grid>
         
         <Border Grid.Row="2" Background="{DynamicResource SystemChromeLowColor}" Padding="8,4">
             <Grid ColumnDefinitions="*,Auto">
-                <TextBlock x:Name="CoordinatesText" Text="X: --, Z: --" />
+                <TextBlock x:Name="CoordinatesText" Text="坐标信息已移至地图左上角" />
                 <TextBlock x:Name="StatusText" Text="Ready" Grid.Column="1" />
             </Grid>
         </Border>

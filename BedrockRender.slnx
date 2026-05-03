@@ -1,5 +1,6 @@
 <Solution>
   <Project Path="BedrockLevelDB/BedrockLevelDB.csproj" />
+  <Project Path="BedrockRender.Avalonia/BedrockRender.Avalonia.csproj" />
   <Project Path="BedrockRender.Avalonia.Demo/BedrockRender.Avalonia.Demo.csproj" />
   <Project Path="BedrockRender.Console/BedrockRender.Console.csproj" />
   <Project Path="BedrockRender/BedrockRender.csproj" />

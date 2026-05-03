@@ -20,6 +20,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\BedrockRender\BedrockRender.csproj" />
+    <ProjectReference Include="..\BedrockRender.Avalonia\BedrockRender.Avalonia.csproj" />
     <ProjectReference Include="..\BedrockWorld\BedrockWorld.csproj" />
   </ItemGroup>
 
