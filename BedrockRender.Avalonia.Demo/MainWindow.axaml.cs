@@ -495,7 +495,7 @@ public partial class MainWindow : Window, IDisposable
             catch (Exception ex)
             {
                 // 捕获异步流水线中的异常，避免因单个 Chunk 错误导致整个程序崩溃
-                System.Diagnostics.Debug.WriteLine($"[Render Error] Chunk {result.Position}: {ex.Message}");
+                System.Diagnostics.Console.WriteLine($"[Render Error] Chunk {result.Position}: {ex.Message}");
             }
         } // 此处 result 自动销毁，内部数组通过 ArrayPool.Return 回收
     }
