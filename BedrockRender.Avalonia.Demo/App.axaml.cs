@@ -1,7 +1,5 @@
 using Avalonia;
 using Avalonia.Controls.ApplicationLifetimes;
-using Avalonia.Data.Core;
-using Avalonia.Data.Core.Plugins;
 using Avalonia.Markup.Xaml;
 
 namespace BedrockRender.Avalonia.Demo;
@@ -17,7 +15,8 @@ public partial class App : Application
     {
         if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
         {
-            BindingPlugins.DataValidators.RemoveAt(0);
+            // Avalonia 12 removed BindingPlugins.DataValidators; the data-annotations
+            // plugin is disabled by default and no longer needs to be removed.
             desktop.MainWindow = new MainWindow();
         }
 
